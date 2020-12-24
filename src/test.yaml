@@ -1,0 +1,6 @@
+from: local
+to: 104.196.18.97
+mirror: False
+
+from_path: ../ideas/test/
+to_path: /home/adryw/test_wow/
