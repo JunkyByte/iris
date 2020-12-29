@@ -1,13 +1,12 @@
+import argparse
+import sys
+import yaml
 import time
 import os
 from watchdog.observers import Observer
 from watchdog.events import PatternMatchingEventHandler
-from fabric import Connection
+from functools import partial
 from rich.console import Console
-import argparse
-import sys
-import yaml
-import rich
 from host import RemotePath, LocalPath
 
 # Setup rich
@@ -67,15 +66,33 @@ my_event_handler = PatternMatchingEventHandler(patterns, ignore_patterns, ignore
 from_path = LocalPath(from_path) if from_local else RemotePath(from_path, from_host)
 to_path = LocalPath(to_path) if to_local else RemotePath(to_path, to_host)
 
+
+def from_write(merged, from_host, path, to_host):
+    if merged:
+        msg = '[green]%s:%s [bold blue]----> [red]%s'  # TODO Make a function for this, is standard with diff arrows
+    else:
+        msg = '[green]%s:%s[/green] | [red]%s'
+    console.log(msg % (from_host, path, to_host))
+
+
+def to_write(merged, from_host, path, to_host):
+    if merged:
+        msg = '[green]%s [bold blue]<---- [red]%s:%s'
+    else:
+        msg = '[green]%s[/green] | [red]%s:%s'
+    console.log(msg % (from_host, to_host, path))
+
+
+t = time.time()
 with console.status('[bold blue] Testing connection to paths') as status:
     # Test connection to Paths is working.
     if not from_path.check_connection():
         console.log('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (from_host, from_path.path))
-        sys.quit()
+        sys.exit()
     console.log('Connection to [green]%s:%s[/green] established' % (from_host, from_path.path))
     if not to_path.check_connection():
         console.log('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (to_host, to_path.path))
-        sys.quit()
+        sys.exit()
     console.log('Connection to [green]%s:%s[/green] established' % (to_host, to_path.path))
 
     # Get all files from both sources
@@ -87,23 +104,14 @@ with console.status('[bold blue] Testing connection to paths') as status:
 
     # For each file do a merge on both sides.
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (from_host, from_path.path, to_host, to_path.path))
-    for f in from_files:
-        if f.path.endswith('.md5'):
-            continue
-        merged = from_path.write(f, to_path)
-        if merged:
-            msg = '[green]%s:%s [bold blue]----> [red]%s'  # TODO Make a function for this, is standard with diff arrows
-        else:
-            msg = '[red]%s:%s[/red] | [green]%s'
-        console.log(msg % (from_host, f.path, to_host))
+
+    tasks = [from_path.write(f, to_path, callback=partial(from_write, from_host=from_host, path=f.path, to_host=to_host))
+             for f in from_files]
+    from_path.run(tasks)
 
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (to_host, to_path.path, from_host, from_path.path))
-    for f in to_files:
-        if f.path.endswith('.md5'):
-            continue
-        merged = to_path.write(f, from_path)
-        if merged:
-            msg = '[green]%s [bold blue]<---- [red]%s:%s'
-        else:
-            msg = '[green]%s[/green] | [red]%s:%s'
-        console.log(msg % (from_host, to_host, f.path))
+    tasks = [to_path.write(f, from_path, callback=partial(to_write, from_host=from_host, path=f.path, to_host=to_host))
+             for f in to_files]
+    from_path.run(tasks)
+
+print('Execution time:', time.time() - t)

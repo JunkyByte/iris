@@ -1,13 +1,14 @@
 import abc
 import os
 import pathlib
-from hashlib import md5
-from io import BytesIO, StringIO
-from functools import partial
+import asyncssh
+import asyncio
+import getpass
+import stat
+from io import BytesIO
 from datetime import datetime
-from shutil import copyfile
-from fabric import Connection
-from invoke.exceptions import UnexpectedExit
+from aiofile import async_open
+from contextlib import asynccontextmanager
 
 
 class File:
@@ -44,41 +45,44 @@ class Path:
     def check_connection(self):
         return True
 
-    def write(self, origin, target_holder):
+    async def write(self, origin, target_holder, callback=None):
         """ Overwrite target with origin if newer """
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, self.relative_path(origin.path))
         origin_content = None
 
-        try:
-            target_md5 = target_holder.get_md5(target_path)
-            origin_content = origin.get_content()
-            origin_md5 = md5(origin_content).hexdigest()
-            origin.holder.update_md5(origin.path, origin_md5)
-
-            if target_md5 == origin_md5:
-                return
-        except FileNotFoundError:
-            pass
+        # Ignore some files (this is a good place as is implementation independent)
+        if target_path.endswith('.md5') or target_path.endswith('.swp'):
+            return False
 
         force = False
         target = None
         try:
-            target = target_holder.get_file(target_path)
+            target = await target_holder.get_file(target_path)
         except FileNotFoundError:
             force = True
 
         merged = False
         if force or origin.time > target.time:
-            if origin_content is None:
-                origin_content = origin.get_content()
-            target_holder._writefile(origin_content, target_path)
+            origin_content = await origin.get_content()
+            await target_holder._writefile(origin_content, target_path, mtime=origin.time)
             merged = True
+
+        if callback is not None:
+            callback(merged)
 
         return merged
 
+    def run(self, tasks):
+        if not isinstance(tasks, list):
+            tasks = [tasks]
+
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(asyncio.gather(*tasks))[0]
+        return res
+
     @abc.abstractmethod
-    def _writefile(self, origin, target):
+    async def _writefile(self, origin, target, mtime):
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -86,85 +90,189 @@ class Path:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def get_content(self, path):
+    async def get_content(self, path):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def get_file(self, path):
+    async def get_file(self, path):
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def get_md5(self, path):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def update_md5(self, path, md5):
-        raise NotImplementedError
 
 class RemotePath(Path):
-    def __init__(self, path, host):
+    def __init__(self, path, host, max_parallel=10, key='~/.ssh/id_rsa'):
         super().__init__(path)
         self.host = host
-        self.conn = Connection(host)
+        try:
+            self.key = RemotePath.load_agent_keys()
+        except ValueError:
+            self.key = RemotePath.import_private_key(key)
+        self.conn = None
+        self.sftp = None
+
+    @asynccontextmanager
+    async def sftp_context(self):
+        if self.sftp is None:
+            async with self.ssh_context() as conn:
+                self.sftp = await conn.start_sftp_client(env={'block_size': 32768})
+
+        async with self.ssh_context() as conn:
+            yield conn, self.sftp
+
+    @asynccontextmanager
+    async def ssh_context(self):
+        if self.conn is None:
+            self.conn = await asyncssh.connect(self.host, client_keys=self.key)
+
+        yield self.conn
+
+    def load_agent_keys(agent_path=None):
+        """
+        The ssh-agent is a convenience tool that aims at easying the use of
+        private keys protected with a password. In a nutshell, the agent runs on
+        your local computer, and you trust it enough to load one or several keys
+        into the agent once and for good - and you provide the password
+        at that time.
+        Later on, each time an ssh connection needs to access a key,
+        the agent can act as a proxy for you and pass the key along
+        to the ssh client without the need for you to enter the password.
+        The ``load_agent_keys`` function allows your python code to access
+        the keys currently knwns to the agent. It is automatically called by the
+        :class:`~apssh.nodes.SshNode` class if you do not explicit the set of
+        keys that you plan to use.
+        Parameters:
+          agent_path: how to locate the agent;
+            defaults to env. variable $SSH_AUTH_SOCK
+        Returns:
+          a list of SSHKey_ keys from the agent
+        .. note::
+          Use the command ``ssh-add -l`` to inspect the set of keys
+          currently present in your agent.
+        """
+        # pylint: disable=c0111
+        async def co_load_agent_keys(agent_path):
+            # make sure to return an empty list when something goes wrong
+            try:
+                agent_client = asyncssh.SSHAgentClient(agent_path)
+                keys = await agent_client.get_keys()
+                agent_client.close()
+                return keys
+            except ValueError as exc:                        # pylint: disable=w0703
+                # not quite sure which exceptions to expect here
+                print(f"When fetching agent keys: "
+                      f"ignored exception {type(exc)} - {exc}")
+                return []
+
+        agent_path = agent_path or os.environ.get('SSH_AUTH_SOCK', None)
+        if agent_path is None:
+            return []
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(co_load_agent_keys(agent_path))
+
+    def import_private_key(filename):
+        """
+        Attempts to import a private key from file
+        Prompts for a password if needed
+        """
+        sshkey = None
+        basename = os.path.basename(filename)
+
+        filename = os.path.expanduser(filename)
+        if not os.path.exists(filename):
+            print("No such key file {}".format(filename))
+            return
+        with open(filename) as file:
+            data = file.read()
+            try:
+                sshkey = asyncssh.import_private_key(data)
+            except asyncssh.KeyImportError:
+                while True:
+                    passphrase = getpass.getpass("Enter passphrase for key {} : ".format(basename))
+                    if not passphrase:
+                        print("Ignoring key {}".format(filename))
+                        break
+                    try:
+                        sshkey = asyncssh.import_private_key(data, passphrase)
+                        break
+                    except asyncssh.KeyImportError:
+                        print("Wrong passphrase")
+            return sshkey
 
     def check_connection(self):
-        # Check connection to remote host
-        x = self.conn.run('echo "Hello World"', hide=True)
-        if x.failed or x.stdout != 'Hello World\n':
-            return False
-        self.os = self.conn.run('echo $(uname)', hide=True).stdout.split('\n')[0]
+        return self.run(self._check_connection())
 
-        # Check path is valid
-        x = self.conn.run('file %s' % self.path, hide=True)
-        if x.failed or 'directory' not in x.stdout:
-            return False
-        return True
+    async def _check_connection(self):
+        # Check connection to remote host
+        async with self.sftp_context() as context:
+            conn, sftp = context
+            try:
+                # Check path is valid
+                if await sftp.isdir(self.path):
+                    return True
+                return False
+            except TimeoutError:
+                return False
 
     def all_files(self):
-        return self._files_path()  # This returns all files in default path
+        return self.run(self._files_path())  # This returns all files in default path
 
-    def _files_path(self, path=None):
-        path = self.path if path is None else path
+    async def _recursive_scan(self, path, files=[]):
+        async with self.sftp_context() as context:
+            conn, sftp = context
+            if await sftp.isfile(path):
+                return [[(await sftp.stat(path)).mtime, path]]
 
-        if self.os == 'Darwin':
-            x = self.conn.run(f'find {path} -type f -print0 | xargs -0 stat -f "%m %N"', hide=True).stdout
-        elif self.os == 'Linux':
-            x = self.conn.run(f'find {path} -type f -printf "%T@ %p\n"', hide=True).stdout
-        else:
-            raise NotImplementedError
+            tasks = set()
+            async for f in sftp.scandir(path):
+                if f.filename in ('.', '..'):  # Ignore reference to self and parent
+                    continue
 
-        x = [y.split() for y in x.split('\n')[:-1]]
-        files = [File(path, time, self) for time, path in x]
+                remotepath = os.path.join(path, f.filename)
+                if stat.S_ISDIR(f.attrs.permissions):
+                    tasks.add(asyncio.create_task(self._recursive_scan(remotepath, files)))
+                else:
+                    files.append([f.attrs.mtime, remotepath])
+
+            if tasks:
+                await asyncio.gather(*tasks)
         return files
 
-    def get_content(self, path):
+    async def _files_path(self, path=None):
+        path = self.path if path is None else path
+        files = await self._recursive_scan(path)
+        files = [File(path, time, self) for time, path in files]
+        return files[0] if len(files) == 1 else files
+
+    async def get_content(self, path):
         fd = BytesIO()
-        self.conn.get(path, fd)
+        async with self.sftp_context() as context:
+            conn, sftp = context
+
+            async with sftp.open(path, 'rb') as src:
+                while True:
+                    data = await src.read(32768)
+                    if not data:
+                        break
+                    fd.write(data)
+
         return fd.getvalue()
 
-    def get_file(self, path):
+    async def get_file(self, path):
         try:
-            return self._files_path(path)[0]
-        except UnexpectedExit:
+            return await self._files_path(path)
+        except (asyncssh.process.ProcessError, asyncssh.sftp.SFTPNoSuchFile):
             raise FileNotFoundError
 
-    def _writefile(self, origin, target):
-        self.conn.run('mkdir -p %s' % os.path.dirname(target))
-        self.conn.put(StringIO(origin.decode('utf-8')), remote=target)
-
-        # Write md5 file
-        content = md5(origin).hexdigest() + '  ' + os.path.basename(target) + '\n'
-        self.conn.put(StringIO(content), remote=target + '.md5')
-
-    def update_md5(self, path, md5):
-        content = md5 + '  ' + os.path.basename(path) + '\n'
-        self.conn.put(StringIO(content), remote=path + '.md5')
-
-    def get_md5(self, path):
-        try:
-            return self.conn.run('md5sum %s' % path, hide=True).stdout.split()[0]
-        except UnexpectedExit:
-            raise FileNotFoundError
+    async def _writefile(self, origin, target, mtime):
+        origin = BytesIO(origin)
+        async with self.sftp_context() as context:
+            conn, sftp = context
+            await sftp.makedirs(os.path.dirname(target), exist_ok=True)
+            async with sftp.open(target, 'wb', asyncssh.SFTPAttrs(mtime=mtime.timestamp())) as dst:
+                while True:
+                    data = origin.read(32768)
+                    if not data:
+                        break
+                    await dst.write(data)
 
 
 class LocalPath(Path):
@@ -186,24 +294,15 @@ class LocalPath(Path):
                 files.append(File(path, time, self))
         return files
 
-    def get_content(self, path):
-        with open(path, 'rb') as f:
-            return f.read()
+    async def get_content(self, path):
+        async with async_open(path, 'rb') as f:
+            return await f.read()
 
-    def get_file(self, path):
+    async def get_file(self, path):
         return File(path, pathlib.Path(path).stat().st_mtime, self)
 
-    def _writefile(self, origin, target):
-        with open(target, 'wb') as f:
-            f.write(origin)
-
-        with open(target + '.md5', 'w') as f:
-            f.write(md5(origin).hexdigest() + '  ' + os.path.basename(target))
-
-    def update_md5(self, path, md5):
-        with open(path + '.md5', 'w') as f:
-            f.write(md5 + '  ' + os.path.basename(path))
-
-    def get_md5(self, path):
-        with open(path + '.md5', 'rb') as f:
-            return md5(f.read()).hexdigest()
+    async def _writefile(self, origin, target, mtime):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        async with async_open(target, 'wb') as f:
+            await f.write(origin)
+        os.utime(target, (mtime.timestamp(), mtime.timestamp()))
