@@ -3,14 +3,23 @@ import sys
 import yaml
 import time
 import os
-from watchdog.observers import Observer
-from watchdog.events import PatternMatchingEventHandler
+import signal
 from functools import partial
 from rich.console import Console
-from host import RemotePath, LocalPath
+from host import RemotePath, LocalPath, run
+from queue import Queue
+
 
 # Setup rich
 console = Console()
+
+
+# Setup signal cleanup
+def cleanup(sig, frame):
+    console.log('[bold red]Cleaning up and exiting')
+    from_path.cleanup()
+    to_path.cleanup()
+    sys.exit(0)
 
 
 def file_path(string):
@@ -55,16 +64,13 @@ to_path = config['to_path']
 from_host = 'local' if from_local else config['from']
 to_host = 'local' if to_local else config['to']
 
-# Setup Watchdog rules
-patterns = '*'
-ignore_patterns = ''
-ignore_directories = False
-case_sensitive = True
-my_event_handler = PatternMatchingEventHandler(patterns, ignore_patterns, ignore_directories, case_sensitive)
-
 # Create Path connections
 from_path = LocalPath(from_path) if from_local else RemotePath(from_path, from_host)
 to_path = LocalPath(to_path) if to_local else RemotePath(to_path, to_host)
+
+
+# Create signal after creating from_path and to_path for cleanup
+signal.signal(signal.SIGINT, cleanup)
 
 
 def from_write(merged, from_host, path, to_host):
@@ -96,7 +102,7 @@ with console.status('[bold blue] Testing connection to paths') as status:
     console.log('Connection to [green]%s:%s[/green] established' % (to_host, to_path.path))
 
     # Get all files from both sources
-    status.update(status='[bold green]Getting all files from both paths...')
+    status.update(status='[bold green]Getting all files from both paths')
     from_files = from_path.all_files()
     console.log('[green]%s[/green] Files received from [green]%s' % (len(from_files), from_host))
     to_files = to_path.all_files()
@@ -107,11 +113,33 @@ with console.status('[bold blue] Testing connection to paths') as status:
 
     tasks = [from_path.write(f, to_path, callback=partial(from_write, from_host=from_host, path=f.path, to_host=to_host))
              for f in from_files]
-    from_path.run(tasks)
+    run(tasks)
 
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (to_host, to_path.path, from_host, from_path.path))
     tasks = [to_path.write(f, from_path, callback=partial(to_write, from_host=from_host, path=f.path, to_host=to_host))
              for f in to_files]
-    from_path.run(tasks)
+    run(tasks)
 
-print('Execution time:', time.time() - t)
+    console.log('[bold blue]Initial sync completed')
+
+with console.status('[bold blue] Launching watchdog programs') as status:
+    from_path.start_watchdog()
+    to_path.start_watchdog()
+
+    status.update(status='[bold green]Listening for changes on local and remote path')
+
+    req = []
+    while True:  # Process requests for watchdogs
+        to_req = to_path.next_task()
+        from_req = from_path.next_task()
+
+        if from_req is not None:
+            req.append(from_path.write(from_req, to_path, callback=partial(from_write, from_host=from_host,
+                                                                           path=from_req.path, to_host=to_host)))
+        if to_req is not None:
+            req.append(to_path.write(to_req, from_path, callback=partial(to_write, from_host=from_host,
+                                                                         path=to_req.path, to_host=to_host)))
+
+        if req:
+            run(req)
+            req = []

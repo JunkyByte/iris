@@ -5,10 +5,13 @@ import asyncssh
 import asyncio
 import getpass
 import stat
+import time
 from io import BytesIO
 from datetime import datetime
 from aiofile import async_open
 from contextlib import asynccontextmanager
+from queue import Queue, Empty
+from threading import Thread, Semaphore
 
 
 class File:
@@ -30,10 +33,49 @@ class File:
         return 'Path: %s - %s' % (self.path, self.time.ctime())
 
 
+class RemoteWDThread(Thread):
+    def __init__(self, path, host, key, tasks, holder):
+        Thread.__init__(self)
+        self.path = path
+        self.host = host
+        self.key = key
+        self.holder = holder
+        self.process = None
+        self.tasks = tasks
+
+    def run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        async def async_wd():
+            async with asyncssh.connect(self.host, client_keys=self.key) as conn:
+                async with conn.create_process('python /tmp/iris_wd.py',
+                                               input=self.path, stderr=asyncssh.STDOUT) as process:
+                    self.process = process
+                    while True:
+                        try:
+                            path, isdir, change, mtime = (await process.stdout.readline()).split()
+                            self.tasks.put(File(path, mtime, self.holder))
+                        except ValueError:
+                            return
+        loop.run_until_complete(async_wd())
+        loop.close()
+
+
+def run(tasks):  # This runs tasks
+    if not isinstance(tasks, list):
+        tasks = [tasks]
+
+    loop = asyncio.get_event_loop()
+    res = loop.run_until_complete(asyncio.gather(*tasks))[0]
+    return res
+
+
 class Path:
     def __init__(self, path):
         self.path = path
         self.host = None
+        self.wd = None
+        self.tasks = None
 
     def __repr__(self):
         return 'Host %s:%s' % (self.host, self.path)
@@ -52,7 +94,7 @@ class Path:
         origin_content = None
 
         # Ignore some files (this is a good place as is implementation independent)
-        if target_path.endswith('.md5') or target_path.endswith('.swp'):
+        if target_path.endswith('.md5') or target_path.endswith('.swp') or target_path.endswith('.swx'):
             return False
 
         force = False
@@ -65,6 +107,9 @@ class Path:
         merged = False
         if force or origin.time > target.time:
             origin_content = await origin.get_content()
+            if origin_content is None:
+                return False
+
             await target_holder._writefile(origin_content, target_path, mtime=origin.time)
             merged = True
 
@@ -73,13 +118,12 @@ class Path:
 
         return merged
 
-    def run(self, tasks):
-        if not isinstance(tasks, list):
-            tasks = [tasks]
-
-        loop = asyncio.get_event_loop()
-        res = loop.run_until_complete(asyncio.gather(*tasks))[0]
-        return res
+    def next_task(self):
+        assert self.tasks is not None, 'The watchdog process is not running'
+        try:
+            return self.tasks.get(timeout=1e-2)
+        except Empty:
+            return None
 
     @abc.abstractmethod
     async def _writefile(self, origin, target, mtime):
@@ -96,6 +140,17 @@ class Path:
     @abc.abstractmethod
     async def get_file(self, path):
         raise NotImplementedError
+
+    @abc.abstractmethod
+    def start_watchdog(self):
+        """
+        This should start the watchdog process on the host
+        """
+        raise NotImplementedError
+    
+    @abc.abstractmethod
+    def cleanup(self):
+        pass
 
 
 class RemotePath(Path):
@@ -198,7 +253,7 @@ class RemotePath(Path):
             return sshkey
 
     def check_connection(self):
-        return self.run(self._check_connection())
+        return run(self._check_connection())
 
     async def _check_connection(self):
         # Check connection to remote host
@@ -213,7 +268,7 @@ class RemotePath(Path):
                 return False
 
     def all_files(self):
-        return self.run(self._files_path())  # This returns all files in default path
+        return run(self._files_path())  # This returns all files in default path
 
     async def _recursive_scan(self, path, files=[]):
         async with self.sftp_context() as context:
@@ -244,15 +299,18 @@ class RemotePath(Path):
 
     async def get_content(self, path):
         fd = BytesIO()
-        async with self.sftp_context() as context:
-            conn, sftp = context
+        try:
+            async with self.sftp_context() as context:
+                conn, sftp = context
 
-            async with sftp.open(path, 'rb') as src:
-                while True:
-                    data = await src.read(32768)
-                    if not data:
-                        break
-                    fd.write(data)
+                async with sftp.open(path, 'rb') as src:
+                    while True:
+                        data = await src.read(32768)
+                        if not data:
+                            break
+                        fd.write(data)
+        except asyncssh.sftp.SFTPNoSuchFile:
+            return None
 
         return fd.getvalue()
 
@@ -273,6 +331,30 @@ class RemotePath(Path):
                     if not data:
                         break
                     await dst.write(data)
+
+    def start_watchdog(self):
+        assert self.tasks is None, 'Already initialized the watchdog'
+        self.tasks = Queue()
+
+        import watchdog_service
+        src_path = os.path.abspath(watchdog_service.__file__)
+
+        async def upload_watchdog():
+            async with self.sftp_context() as context:
+                conn, sftp = context
+                await sftp.put(src_path, '/tmp/iris_wd.py')
+
+        run(upload_watchdog())
+        self.wd = RemoteWDThread(self.path, self.host, self.key, self.tasks, self)
+        self.wd.start()
+
+        while self.wd.process is None:
+            time.sleep(1e-2)
+
+    def cleanup(self):
+        if self.wd is None:
+            return
+        self.wd.process.terminate()
 
 
 class LocalPath(Path):
@@ -295,8 +377,11 @@ class LocalPath(Path):
         return files
 
     async def get_content(self, path):
-        async with async_open(path, 'rb') as f:
-            return await f.read()
+        try:
+            async with async_open(path, 'rb') as f:
+                return await f.read()
+        except FileNotFoundError:
+            return None
 
     async def get_file(self, path):
         return File(path, pathlib.Path(path).stat().st_mtime, self)
@@ -306,3 +391,18 @@ class LocalPath(Path):
         async with async_open(target, 'wb') as f:
             await f.write(origin)
         os.utime(target, (mtime.timestamp(), mtime.timestamp()))
+
+    def _wd(path, self, q):
+        from watchdog_service import run_wd
+        run_wd(path, queue=q)
+        while True:
+            path, isdir, change, mtime = q.get().split()
+            self.tasks.put(File(path, mtime, self))
+
+    def start_watchdog(self):
+        assert self.tasks is None, 'Already initialized the watchdog'
+        self.tasks = Queue()
+
+        self.wd = Thread(target=LocalPath._wd, args=(self.path, self, Queue()))
+        self.wd.daemon = True
+        self.wd.start()
