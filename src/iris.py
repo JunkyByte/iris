@@ -89,6 +89,22 @@ def to_write(merged, from_host, path, to_host):
     console.log(msg % (from_host, to_host, path))
 
 
+def from_delete(merged, from_host, path, to_host):
+    if merged:
+        msg = '[green]%s:%s [bold blue]--D-> [red]%s'
+    else:
+        msg = '[green]%s:%s[/green] | [red]%s'
+    console.log(msg % (from_host, path, to_host))
+
+
+def to_delete(merged, from_host, path, to_host):
+    if merged:
+        msg = '[green]%s [bold blue]<-D-- [red]%s:%s'
+    else:
+        msg = '[green]%s[/green] | [red]%s:%s'
+    console.log(msg % (from_host, to_host, path))
+
+
 t = time.time()
 with console.status('[bold blue] Testing connection to paths') as status:
     # Test connection to Paths is working.
@@ -111,12 +127,12 @@ with console.status('[bold blue] Testing connection to paths') as status:
     # For each file do a merge on both sides.
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (from_host, from_path.path, to_host, to_path.path))
 
-    tasks = [from_path.write(f, to_path, callback=partial(from_write, from_host=from_host, path=f.path, to_host=to_host))
+    tasks = [from_path.write(f, to_path, write_cb=partial(from_write, from_host=from_host, path=f.path, to_host=to_host))
              for f in from_files]
     run(tasks)
 
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (to_host, to_path.path, from_host, from_path.path))
-    tasks = [to_path.write(f, from_path, callback=partial(to_write, from_host=from_host, path=f.path, to_host=to_host))
+    tasks = [to_path.write(f, from_path, write_cb=partial(to_write, from_host=from_host, path=f.path, to_host=to_host))
              for f in to_files]
     run(tasks)
 
@@ -126,19 +142,21 @@ with console.status('[bold blue] Launching watchdog programs') as status:
     from_path.start_watchdog()
     to_path.start_watchdog()
 
-    status.update(status='[bold green]Listening for changes on local and remote path')
+    status.update(status='[bold blue]Listening for changes on local and remote path')
 
     req = []
     while True:  # Process requests for watchdogs
-        to_req = to_path.next_task()
         from_req = from_path.next_task()
+        to_req = to_path.next_task()
 
         if from_req is not None:
-            req.append(from_path.write(from_req, to_path, callback=partial(from_write, from_host=from_host,
-                                                                           path=from_req.path, to_host=to_host)))
+            args = {'from_host': from_host, 'path': from_req.path, 'to_host': to_host}
+            req.append(from_path.write(from_req, to_path,
+                                       write_cb=partial(from_write, **args), delete_cb=partial(from_delete, **args)))
         if to_req is not None:
-            req.append(to_path.write(to_req, from_path, callback=partial(to_write, from_host=from_host,
-                                                                         path=to_req.path, to_host=to_host)))
+            args = {'from_host': from_host, 'path': to_req.path, 'to_host': to_host}
+            req.append(to_path.write(to_req, from_path,
+                                     write_cb=partial(to_write, **args), delete_cb=partial(to_delete, **args)))
 
         if req:
             run(req)

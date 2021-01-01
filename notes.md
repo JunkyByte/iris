@@ -24,6 +24,8 @@ UP: Rsync may not be needed as fabric allows get / put.
 
 ----
 
+(THIS SEEMS TO BE TRUE ONLY ON MACOS)
+
 Sync logic:
 - R: Remote
 - L: Local

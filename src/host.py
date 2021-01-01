@@ -11,26 +11,36 @@ from datetime import datetime
 from aiofile import async_open
 from contextlib import asynccontextmanager
 from queue import Queue, Empty
-from threading import Thread, Semaphore
+from threading import Thread
 
 
 class File:
-    def __init__(self, path, time, path_holder):
+    def __init__(self, path, time, path_holder, change_type=None):
         self.path = path
         self.holder = path_holder
+        self.time = self.set_time(time) if time is not None else None
+        self.change_type = change_type
+
+    def set_time(self, time):
         if isinstance(time, datetime):
-            self.time = time
+            return time
         else:
             if isinstance(time, str):
-                self.time = datetime.fromtimestamp(int(time.split('.')[0]))
+                return datetime.fromtimestamp(float(time))
             else:
-                self.time = datetime.fromtimestamp(time)
+                return datetime.fromtimestamp(time)
+
+    def fetch_time(self):
+        return self.holder.get_time(self.path)
 
     def get_content(self):
         return self.holder.get_content(self.path)
 
     def __repr__(self):
-        return 'Path: %s - %s' % (self.path, self.time.ctime())
+        try:
+            return 'Path: %s - %s - %s' % (self.path, self.time.ctime(), self.time.timestamp())
+        except AttributeError:
+            return 'Path: %s - %s - %s' % (self.path, None, None)
 
 
 class RemoteWDThread(Thread):
@@ -46,17 +56,25 @@ class RemoteWDThread(Thread):
     def run(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+
         async def async_wd():
-            async with asyncssh.connect(self.host, client_keys=self.key) as conn:
-                async with conn.create_process('python /tmp/iris_wd.py',
+            async with asyncssh.connect(self.host, client_keys=self.key, keepalive_interval=60) as conn:
+                async with conn.create_process('python -u /tmp/iris_wd.py',
                                                input=self.path, stderr=asyncssh.STDOUT) as process:
                     self.process = process
                     while True:
                         try:
                             path, isdir, change, mtime = (await process.stdout.readline()).split()
-                            self.tasks.put(File(path, mtime, self.holder))
-                        except ValueError:
-                            return
+                            #print(path, isdir, change, mtime)
+                            if change != 'D':
+                                mtime = None 
+                            self.tasks.put(File(path, mtime, self.holder, change))
+                        except ValueError as e:
+                            l = True
+                            while l:
+                                l = await process.stdout.readline()
+                                print(l)
+                            raise e
         loop.run_until_complete(async_wd())
         loop.close()
 
@@ -87,11 +105,41 @@ class Path:
     def check_connection(self):
         return True
 
-    async def write(self, origin, target_holder, callback=None):
+    def write(self, origin, target_holder, write_cb=None, delete_cb=None):
+        if origin.change_type in [None, 'C', 'M']:
+            return self._write(origin, target_holder, write_cb)
+        else:
+            return self._delete(origin, target_holder, delete_cb)
+
+    async def _delete(self, origin, target_holder, callback=None):
+        """ Delete file """
+        # Find correct path for target file
+        target_path = os.path.join(target_holder.path, self.relative_path(origin.path))
+
+        # Ignore some files (this is a good place as is implementation independent)
+        if target_path.endswith('.md5') or target_path.endswith('.swp') or target_path.endswith('.swx'):
+            return False
+
+        target = None
+        try:
+            target = await target_holder.get_file(target_path)
+        except FileNotFoundError:
+            return True
+
+        merged = False
+        if origin.time > target.time:
+            await target_holder._deletefile(target_path)
+            merged = True
+
+        if callback is not None:
+            callback(merged)
+
+        return merged
+
+    async def _write(self, origin, target_holder, callback=None):
         """ Overwrite target with origin if newer """
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, self.relative_path(origin.path))
-        origin_content = None
 
         # Ignore some files (this is a good place as is implementation independent)
         if target_path.endswith('.md5') or target_path.endswith('.swp') or target_path.endswith('.swx'):
@@ -104,7 +152,15 @@ class Path:
         except FileNotFoundError:
             force = True
 
+        # Watchdog return File instance with no time, we fetch it now
+        try:
+            if origin.time is None:
+                origin.time = await origin.fetch_time()
+        except FileNotFoundError:
+            return False
+
         merged = False
+        #print(origin.time, target.time, origin.time != target.time)
         if force or origin.time > target.time:
             origin_content = await origin.get_content()
             if origin_content is None:
@@ -130,6 +186,10 @@ class Path:
         raise NotImplementedError
 
     @abc.abstractmethod
+    async def _deletefile(self, target):
+        raise NotImplementedError
+
+    @abc.abstractmethod
     def all_files(self):
         raise NotImplementedError
 
@@ -142,12 +202,16 @@ class Path:
         raise NotImplementedError
 
     @abc.abstractmethod
+    async def get_time(self, path):
+        raise NotImplementedError
+
+    @abc.abstractmethod
     def start_watchdog(self):
         """
         This should start the watchdog process on the host
         """
         raise NotImplementedError
-    
+
     @abc.abstractmethod
     def cleanup(self):
         pass
@@ -176,7 +240,7 @@ class RemotePath(Path):
     @asynccontextmanager
     async def ssh_context(self):
         if self.conn is None:
-            self.conn = await asyncssh.connect(self.host, client_keys=self.key)
+            self.conn = await asyncssh.connect(self.host, client_keys=self.key, keepalive_interval=60)
 
         yield self.conn
 
@@ -314,6 +378,9 @@ class RemotePath(Path):
 
         return fd.getvalue()
 
+    async def get_time(self, path):
+        return (await self.get_file(path)).time
+
     async def get_file(self, path):
         try:
             return await self._files_path(path)
@@ -325,12 +392,23 @@ class RemotePath(Path):
         async with self.sftp_context() as context:
             conn, sftp = context
             await sftp.makedirs(os.path.dirname(target), exist_ok=True)
-            async with sftp.open(target, 'wb', asyncssh.SFTPAttrs(mtime=mtime.timestamp())) as dst:
+            async with sftp.open(target, 'wb', asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())) as dst:
                 while True:
                     data = origin.read(32768)
                     if not data:
                         break
                     await dst.write(data)
+                #await dst.setstat(asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp()))
+                await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
+
+    async def _deletefile(self, target):
+        async with self.sftp_context() as context:
+            conn, sftp = context
+
+            try:
+                await sftp.remove(target)
+            except (asyncssh.process.ProcessError, asyncssh.sftp.SFTPNoSuchFile):
+                pass
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
@@ -377,14 +455,14 @@ class LocalPath(Path):
         return files
 
     async def get_content(self, path):
-        try:
-            async with async_open(path, 'rb') as f:
-                return await f.read()
-        except FileNotFoundError:
-            return None
+        async with async_open(path, 'rb') as f:
+            return await f.read()
 
     async def get_file(self, path):
         return File(path, pathlib.Path(path).stat().st_mtime, self)
+
+    async def get_time(self, path):
+        return (await self.get_file(path)).time
 
     async def _writefile(self, origin, target, mtime):
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -392,17 +470,26 @@ class LocalPath(Path):
             await f.write(origin)
         os.utime(target, (mtime.timestamp(), mtime.timestamp()))
 
+    async def _deletefile(self, target):
+        try:
+            os.remove(target)
+        except FileNotFoundError:
+            pass
+
     def _wd(path, self, q):
         from watchdog_service import run_wd
-        run_wd(path, queue=q)
+        run_wd(path, queue=q, log=True)
         while True:
             path, isdir, change, mtime = q.get().split()
-            self.tasks.put(File(path, mtime, self))
+            #print(path, isdir, change, mtime)
+            if change != 'D':
+                mtime = None 
+            self.tasks.put(File(os.path.relpath(path), mtime, self, change))
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
         self.tasks = Queue()
 
-        self.wd = Thread(target=LocalPath._wd, args=(self.path, self, Queue()))
+        self.wd = Thread(target=LocalPath._wd, args=(os.path.abspath(self.path), self, Queue()))
         self.wd.daemon = True
         self.wd.start()
