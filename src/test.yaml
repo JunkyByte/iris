@@ -1,6 +1,7 @@
-from: local
+from: 104.196.18.97
 to: 104.196.18.97
 mirror: False
 
-from_path: ../ideas/test/
+#from_path: ../ideas/test/
+from_path: /home/adryw/testparam/
 to_path: /home/adryw/test_wow/

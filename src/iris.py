@@ -7,11 +7,40 @@ import signal
 from functools import partial
 from rich.console import Console
 from host import RemotePath, LocalPath, run
-from queue import Queue
+
+
+class PrettyConsole(Console):
+    def __init__(self):
+        super().__init__()
+
+    def callback_write(self, from_host, path, to_host, rev=False):
+        return partial(self.log_write, from_host=from_host, path=path, to_host=to_host, rev=rev)
+
+    def log_write(self, merged, from_host, path, to_host, change, rev):
+        # Choose change symbol
+        if merged:
+            if change == 'M':
+                change = '---->'
+            elif change == 'D':
+                change = '--D->'
+            else:
+                change = '---->'
+        else:
+            change = '|'
+
+        # Change direction if reversed
+        change = change.replace('>', '<')[::-1] if rev else change
+
+        msg = '[green]%s:%s[/green] [bold blue]%s [red]%s'
+        if rev:
+            msg = '[green]%s[/green] [bold blue]%s [red]%s:%s'
+
+        subs = (from_host, change, to_host, path) if rev else (from_host, path, change, to_host)
+        self.log(msg % subs)
 
 
 # Setup rich
-console = Console()
+console = PrettyConsole()
 
 
 # Setup signal cleanup
@@ -73,38 +102,6 @@ to_path = LocalPath(to_path) if to_local else RemotePath(to_path, to_host)
 signal.signal(signal.SIGINT, cleanup)
 
 
-def from_write(merged, from_host, path, to_host):
-    if merged:
-        msg = '[green]%s:%s [bold blue]----> [red]%s'  # TODO Make a function for this, is standard with diff arrows
-    else:
-        msg = '[green]%s:%s[/green] | [red]%s'
-    console.log(msg % (from_host, path, to_host))
-
-
-def to_write(merged, from_host, path, to_host):
-    if merged:
-        msg = '[green]%s [bold blue]<---- [red]%s:%s'
-    else:
-        msg = '[green]%s[/green] | [red]%s:%s'
-    console.log(msg % (from_host, to_host, path))
-
-
-def from_delete(merged, from_host, path, to_host):
-    if merged:
-        msg = '[green]%s:%s [bold blue]--D-> [red]%s'
-    else:
-        msg = '[green]%s:%s[/green] | [red]%s'
-    console.log(msg % (from_host, path, to_host))
-
-
-def to_delete(merged, from_host, path, to_host):
-    if merged:
-        msg = '[green]%s [bold blue]<-D-- [red]%s:%s'
-    else:
-        msg = '[green]%s[/green] | [red]%s:%s'
-    console.log(msg % (from_host, to_host, path))
-
-
 t = time.time()
 with console.status('[bold blue] Testing connection to paths') as status:
     # Test connection to Paths is working.
@@ -127,14 +124,17 @@ with console.status('[bold blue] Testing connection to paths') as status:
     # For each file do a merge on both sides.
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (from_host, from_path.path, to_host, to_path.path))
 
-    tasks = [from_path.write(f, to_path, write_cb=partial(from_write, from_host=from_host, path=f.path, to_host=to_host))
-             for f in from_files]
-    run(tasks)
+    tasks = [from_path.write(f, to_path, console.callback_write(from_host, f.path, to_host)) for f in from_files]
+
+    if tasks:
+        run(tasks)
 
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (to_host, to_path.path, from_host, from_path.path))
-    tasks = [to_path.write(f, from_path, write_cb=partial(to_write, from_host=from_host, path=f.path, to_host=to_host))
-             for f in to_files]
-    run(tasks)
+
+    tasks = [to_path.write(f, from_path, console.callback_write(from_host, f.path, to_host, True)) for f in to_files]
+
+    if tasks:
+        run(tasks)
 
     console.log('[bold blue]Initial sync completed')
 
@@ -150,13 +150,9 @@ with console.status('[bold blue] Launching watchdog programs') as status:
         to_req = to_path.next_task()
 
         if from_req is not None:
-            args = {'from_host': from_host, 'path': from_req.path, 'to_host': to_host}
-            req.append(from_path.write(from_req, to_path,
-                                       write_cb=partial(from_write, **args), delete_cb=partial(from_delete, **args)))
+            req.append(from_path.write(from_req, to_path, console.callback_write(from_host, from_req.path, to_host)))
         if to_req is not None:
-            args = {'from_host': from_host, 'path': to_req.path, 'to_host': to_host}
-            req.append(to_path.write(to_req, from_path,
-                                     write_cb=partial(to_write, **args), delete_cb=partial(to_delete, **args)))
+            req.append(to_path.write(to_req, from_path, console.callback_write(from_host, to_req.path, to_host, True)))
 
         if req:
             run(req)
