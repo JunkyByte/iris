@@ -31,12 +31,12 @@ class PrettyConsole(Console):
         # Change direction if reversed
         change = change.replace('>', '<')[::-1] if rev else change
 
-        msg = '[green]%s:%s[/green] [bold blue]%s [red]%s'
+        msg = '[green]%s:%s[/green] [bold blue]%5s [red]%s'
         if rev:
-            msg = '[green]%s[/green] [bold blue]%s [red]%s:%s'
+            msg = '[green]%s[/green] [bold blue]%5s [red]%s:%s'
 
         subs = (from_host, change, to_host, path) if rev else (from_host, path, change, to_host)
-        self.log(msg % subs)
+        self.print(msg % subs)
 
 
 # Setup rich
@@ -45,7 +45,7 @@ console = PrettyConsole()
 
 # Setup signal cleanup
 def cleanup(sig, frame):
-    console.log('[bold red]Cleaning up and exiting')
+    console.print('[bold red]Cleaning up and exiting')
     from_path.cleanup()
     to_path.cleanup()
     sys.exit(0)
@@ -55,18 +55,18 @@ def file_path(string):
     if os.path.isfile(string):
         return string
     else:
-        console.log('[green]%s[/green] [red] - Config file not found[/red]' % string)
+        console.print('[green]%s[/green] [red] - Config file not found[/red]' % string)
         sys.exit()
 
 
 parser = argparse.ArgumentParser(description='TODO: Description')
-parser.add_argument('--config', type=file_path, help='TODO: yaml config file')
+parser.add_argument('--config', type=file_path, help='yaml config file path')
 
 # Arg parsing and setup
 args = parser.parse_args()
 if args.config is None:
-    console.log('[red]Error on parameter validation[/red]')
-    console.log('Run as `python iris.py --config yaml_file`')
+    console.print('[red]Error on parameter validation[/red]')
+    console.print('Run as `python iris.py --config yaml_file`')
     sys.exit()
 
 config = None
@@ -74,28 +74,30 @@ if os.path.isfile(args.config):
     with open(args.config, 'r') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
 
-KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path']
-DEFAULTS = {'mirror': False}
+KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern']
+DEFAULTS = {'mirror': False, 'pattern': '*', 'ignore_pattern': '//'}
 
 if all([k in config.keys() or k in DEFAULTS.keys() for k in KEYS]):
     config = {**DEFAULTS, **config}
 else:
-    console.log('[red]Parameters missing on yaml config file')
+    console.print('[red]Parameters missing on yaml config file')
     missing = [k for k in KEYS if k not in config.keys() and k not in DEFAULTS.keys()]
-    console.log('Missing parameters: \n[green]%s' % '\n'.join(missing))
+    console.print('Missing parameters: \n[green]%s' % '\n'.join(missing))
 
 mirror = config['mirror']
 from_local = config['from'] == 'local'
 to_local = config['to'] == 'local'
 from_path = config['from_path']
 to_path = config['to_path']
+pat = config['pattern']
+npat = config['ignore_pattern']
 
 from_host = 'local' if from_local else config['from']
 to_host = 'local' if to_local else config['to']
 
 # Create Path connections
-from_path = LocalPath(from_path) if from_local else RemotePath(from_path, from_host)
-to_path = LocalPath(to_path) if to_local else RemotePath(to_path, to_host)
+from_path = LocalPath(from_path, pat, npat) if from_local else RemotePath(from_path, from_host, pattern=pat, ignore_pattern=npat)
+to_path = LocalPath(to_path, pat, npat) if to_local else RemotePath(to_path, to_host, pattern=pat, ignore_pattern=npat)
 
 
 # Create signal after creating from_path and to_path for cleanup
@@ -106,20 +108,20 @@ t = time.time()
 with console.status('[bold blue] Testing connection to paths') as status:
     # Test connection to Paths is working.
     if not from_path.check_connection():
-        console.log('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (from_host, from_path.path))
+        console.print('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (from_host, from_path.path))
         sys.exit()
-    console.log('Connection to [green]%s:%s[/green] established' % (from_host, from_path.path))
+    console.print('Connection to [green]%s:%s[/green] established' % (from_host, from_path.path))
     if not to_path.check_connection():
-        console.log('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (to_host, to_path.path))
+        console.print('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (to_host, to_path.path))
         sys.exit()
-    console.log('Connection to [green]%s:%s[/green] established' % (to_host, to_path.path))
+    console.print('Connection to [green]%s:%s[/green] established' % (to_host, to_path.path))
 
     # Get all files from both sources
     status.update(status='[bold green]Getting all files from both paths')
     from_files = from_path.all_files()
-    console.log('[green]%s[/green] Files received from [green]%s' % (len(from_files), from_host))
+    console.print('[green]%s[/green] Files received from [green]%s' % (len(from_files), from_host))
     to_files = to_path.all_files()
-    console.log('[green]%s[/green] Files received from [green]%s' % (len(to_files), to_host))
+    console.print('[green]%s[/green] Files received from [green]%s' % (len(to_files), to_host))
 
     # For each file do a merge on both sides.
     status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (from_host, from_path.path, to_host, to_path.path))
@@ -136,7 +138,7 @@ with console.status('[bold blue] Testing connection to paths') as status:
     if tasks:
         run(tasks)
 
-    console.log('[bold blue]Initial sync completed')
+    console.print('[bold blue]Initial sync completed')
 
 with console.status('[bold blue] Launching watchdog programs') as status:
     from_path.start_watchdog()

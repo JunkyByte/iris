@@ -1,7 +1,9 @@
-from: 104.196.18.97
+from: local
 to: 104.196.18.97
 mirror: False
 
-#from_path: ../ideas/test/
-from_path: /home/adryw/testparam/
+pattern: '*'
+ignore_pattern: '//'
+
+from_path: ../ideas/test/
 to_path: /home/adryw/test_wow/

@@ -12,6 +12,8 @@ from aiofile import async_open
 from contextlib import asynccontextmanager
 from queue import Queue, Empty
 from threading import Thread
+from functools import partial
+from fnmatch import fnmatchcase
 
 
 class File:
@@ -44,7 +46,7 @@ class File:
 
 
 class RemoteWDThread(Thread):
-    def __init__(self, path, host, key, tasks, holder):
+    def __init__(self, path, host, key, tasks, holder, pattern='*', ignore_pattern='//'):
         Thread.__init__(self)
         self.path = path
         self.host = host
@@ -52,6 +54,8 @@ class RemoteWDThread(Thread):
         self.holder = holder
         self.process = None
         self.tasks = tasks
+        self.pattern = pattern
+        self.ignore_pattern = ignore_pattern
 
     def run(self):
         loop = asyncio.new_event_loop()
@@ -60,7 +64,8 @@ class RemoteWDThread(Thread):
         async def async_wd():
             async with asyncssh.connect(self.host, client_keys=self.key, keepalive_interval=60) as conn:
                 async with conn.create_process('python -u /tmp/iris_wd.py',
-                                               input=self.path, stderr=asyncssh.STDOUT) as process:
+                                               input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
+                                               stderr=asyncssh.STDOUT) as process:
                     self.process = process
                     while True:
                         try:
@@ -74,8 +79,7 @@ class RemoteWDThread(Thread):
                             while line:
                                 line = await process.stdout.readline()
                                 print(line)
-                            # raise e
-                            return None
+                            raise e
         loop.run_until_complete(async_wd())
         loop.close()
 
@@ -90,9 +94,13 @@ def run(tasks):  # This runs tasks
 
 
 class Path:
-    def __init__(self, path):
+    def __init__(self, path, pattern='*', ignore_pattern='//'):
         self.path = path
         self.host = None
+        self.pattern = pattern
+        self.has_pattern = lambda p: any([fnmatchcase(p, pat) for pat in self.pattern.split()])
+        self.ignore_pattern = ignore_pattern
+        self.has_ignore = lambda p: any([fnmatchcase(p, pat) for pat in self.ignore_pattern.split()])
         self.wd = None
         self.tasks = None
 
@@ -106,7 +114,20 @@ class Path:
     def check_connection(self):
         return True
 
+    async def _empty(self):
+        return None
+
     def write(self, origin, target_holder, write_cb=None):
+        # Find correct path for target file
+        target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
+
+        if not self.has_pattern(target_path):
+            return self._empty()
+
+        # Ignore some files (this is a good place as is implementation independent)
+        if target_path.endswith(('.md5', '.swp', '.swx', '.DS_Store')) or self.has_ignore(target_path):
+            return self._empty()
+
         if origin.change_type in [None, 'C', 'M']:
             return self._write(origin, target_holder, write_cb)
         else:
@@ -116,10 +137,6 @@ class Path:
         """ Delete file """
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
-
-        # Ignore some files (this is a good place as is implementation independent)
-        if target_path.endswith('.md5') or target_path.endswith('.swp') or target_path.endswith('.swx'):
-            return False
 
         target = None
         try:
@@ -141,10 +158,6 @@ class Path:
         """ Overwrite target with origin if newer """
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
-
-        # Ignore some files (this is a good place as is implementation independent)
-        if target_path.endswith(('.md5', '.swp', '.swx', '.DS_Store')):
-            return False
 
         force = False
         target = None
@@ -219,8 +232,8 @@ class Path:
 
 
 class RemotePath(Path):
-    def __init__(self, path, host, key='~/.ssh/id_rsa'):
-        super().__init__(path)
+    def __init__(self, path, host, key='~/.ssh/id_rsa', pattern='*', ignore_pattern='//'):
+        super().__init__(path, pattern, ignore_pattern)
         self.host = host
         try:
             self.key = RemotePath.load_agent_keys()
@@ -436,8 +449,8 @@ class RemotePath(Path):
 
 
 class LocalPath(Path):
-    def __init__(self, path):
-        super().__init__(path)
+    def __init__(self, path, pattern='*', ignore_pattern='//'):
+        super().__init__(path, pattern, ignore_pattern)
         self.host = 'local'
 
     def check_connection(self):
@@ -478,7 +491,7 @@ class LocalPath(Path):
 
     def _wd(path, self, q):
         from watchdog_service import run_wd
-        run_wd(path, queue=q, log=True)
+        run_wd(path, queue=q, log=True, pattern=self.pattern, ignore_pattern=self.ignore_pattern)
         while True:
             path, isdir, change, mtime = q.get().split()
             # print(path, isdir, change, mtime)

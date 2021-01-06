@@ -9,7 +9,7 @@ from watchdog.events import PatternMatchingEventHandler
 
 
 class WatchdogManager:
-    def __init__(self, path, queue_out=None, log=False):
+    def __init__(self, path, queue_out=None, log=False, pattern='*', ignore_pattern='//'):
         self.queue_out = queue_out
         self.stdout = True if queue_out is None else False
         self.log = log
@@ -18,8 +18,8 @@ class WatchdogManager:
         #if self.log:
         #    print('Starting watchdog on %s' % path)
 
-        patterns = "*"
-        ignore_patterns = ['*.md5', '*.swp', '*.swx', '*.swpx']
+        patterns = list(pattern.split())
+        ignore_patterns = ['*.md5', '*.swp', '*.swx', '*.swpx'] + list(ignore_pattern.split())
         ignore_directories = True
         case_sensitive = True
         handler = PatternMatchingEventHandler(patterns, ignore_patterns, ignore_directories, case_sensitive)
@@ -39,20 +39,12 @@ class WatchdogManager:
                 t = pathlib.Path(path).stat().st_mtime
 
                 # Skip if too close to last event already dispatched (on same file)
-                #if self.prev_ev['path'] == path:
-                    #if self.log:
-                    #    print('TIME FROM LAST EV:', datetime.fromtimestamp(t) - self.prev_ev['time'])
-
                 if self.prev_ev['path'] == path and datetime.fromtimestamp(time.time()) - self.prev_ev['time'] < timedelta(seconds=0.5):
-                    #if self.log:
-                    #    print("SKIPPED EVENT")
                     return
             else:
                 t = time.time()  # On file deletion use current time as stamp
 
                 if os.path.isfile(path):
-                    #if self.log:
-                    #    print('Skipping delete as file exists')
                     return
 
             msg = path + ' ' + str(isdir) + ' ' + change + ' ' + str(t)
@@ -85,17 +77,13 @@ class WatchdogManager:
         self.observer.join()
 
 
-def run_wd(path, block=False, queue=None, log=False):
-    wd = WatchdogManager(path, queue, log)
+def run_wd(path, block=False, queue=None, log=False, pattern='*', ignore_pattern='//'):
+    wd = WatchdogManager(path, queue, log, pattern, ignore_pattern)
     if block:
         wd.wait()
     return wd
 
 
 if __name__ == '__main__':
-    line = None
-    while line is None:
-        for line in sys.stdin:
-            if line is not None:
-                break
-    wd = run_wd(line.split('\n')[0], block=True)
+    inp = [l.replace('\n', '') for l in sys.stdin]
+    wd = run_wd(inp[0].split('\n')[0], block=True, pattern=inp[1], ignore_pattern=inp[2])
