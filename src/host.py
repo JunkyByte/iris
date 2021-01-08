@@ -79,7 +79,7 @@ class RemoteWDThread(Thread):
                             while line:
                                 line = await process.stdout.readline()
                                 print(line)
-                            raise e
+                            break
         loop.run_until_complete(async_wd())
         loop.close()
 
@@ -189,7 +189,9 @@ class Path:
         return merged
 
     def next_task(self):
-        assert self.tasks is not None, 'The watchdog process is not running'
+        if self.tasks is None:
+            return None
+
         try:
             return self.tasks.get(timeout=1e-2)
         except Empty:
@@ -427,8 +429,8 @@ class RemotePath(Path):
         assert self.tasks is None, 'Already initialized the watchdog'
         self.tasks = Queue()
 
-        import watchdog_service
-        src_path = os.path.abspath(watchdog_service.__file__)
+        import src.watchdog_service
+        src_path = os.path.abspath(src.watchdog_service.__file__)
 
         async def upload_watchdog():
             async with self.sftp_context() as context:
@@ -490,7 +492,7 @@ class LocalPath(Path):
             pass
 
     def _wd(path, self, q):
-        from watchdog_service import run_wd
+        from src.watchdog_service import run_wd
         run_wd(path, queue=q, log=True, pattern=self.pattern, ignore_pattern=self.ignore_pattern)
         while True:
             path, isdir, change, mtime = q.get().split()

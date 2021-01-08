@@ -1,0 +1,9 @@
+fabric==2.5.0
+invoke==1.4.1
+scp==0.13.3
+paramiko==2.7.2
+aiofile==3.3.3
+watchdog==0.10.1
+asyncssh_unofficial==0.9.2
+PyYAML==5.3.1
+rich==9.6.1
