@@ -1,5 +1,4 @@
 # iris
-![iris gif](https://gph.is/g/4MKydDW)
 
 Iris is a simple utility written completely in python which allows to sync folders between local and remote ssh (sftp) server.
 Iris runs locally and requires a working python installation on remote server (if you want the connection to be bidirectional).
