@@ -6,14 +6,15 @@ import asyncio
 import getpass
 import stat
 import time
+import logging
 from io import BytesIO
 from datetime import datetime
 from aiofile import async_open
 from contextlib import asynccontextmanager
 from queue import Queue, Empty
 from threading import Thread
-from functools import partial
 from fnmatch import fnmatchcase
+log = logging.getLogger('iris')
 
 
 class File:
@@ -27,10 +28,7 @@ class File:
         if isinstance(time, datetime):
             return time
         else:
-            if isinstance(time, str):
-                return datetime.fromtimestamp(float(time))
-            else:
-                return datetime.fromtimestamp(time)
+            return datetime.fromtimestamp(int(time))
 
     def fetch_time(self):
         return self.holder.get_time(self.path)
@@ -70,7 +68,7 @@ class RemoteWDThread(Thread):
                     while True:
                         try:
                             path, isdir, change, mtime = (await process.stdout.readline()).split()
-                            # print(path, isdir, change, mtime)
+                            log.debug('Remote WD event: ' + path, isdir, change, mtime)
                             if change != 'D':
                                 mtime = None
                             self.tasks.put(File(path, mtime, self.holder, change))
@@ -78,7 +76,8 @@ class RemoteWDThread(Thread):
                             line = True
                             while line:
                                 line = await process.stdout.readline()
-                                print(line)
+                                log.debug(line)
+                                log.debug(e)
                             break
         loop.run_until_complete(async_wd())
         loop.close()
@@ -94,9 +93,10 @@ def run(tasks):  # This runs tasks
 
 
 class Path:
-    def __init__(self, path, pattern='*', ignore_pattern='//'):
+    def __init__(self, path, dry=False, pattern='*', ignore_pattern='//'):
         self.path = path
         self.host = None
+        self.dry = dry
         self.pattern = pattern
         self.has_pattern = lambda p: any([fnmatchcase(p, pat) for pat in self.pattern.split()])
         self.ignore_pattern = ignore_pattern
@@ -126,6 +126,7 @@ class Path:
 
         # Ignore some files (this is a good place as is implementation independent)
         if target_path.endswith(('.md5', '.swp', '.swx', '.DS_Store')) or self.has_ignore(target_path):
+            log.debug('Ignored file %s' % origin)
             return self._empty()
 
         if origin.change_type in [None, 'C', 'M']:
@@ -146,7 +147,9 @@ class Path:
 
         merged = False
         if origin.time > target.time:
-            await target_holder._deletefile(target_path)
+            log.debug('Calling delete on %s' % target_path)
+            if not self.dry:
+                await target_holder._deletefile(target_path)
             merged = True
 
         if callback is not None:
@@ -174,13 +177,14 @@ class Path:
             return False
 
         merged = False
-        # print(origin.time, target.time, origin.time != target.time)
         if force or origin.time > target.time:
             origin_content = await origin.get_content()
             if origin_content is None:
                 return False
 
-            await target_holder._writefile(origin_content, target_path, mtime=origin.time)
+            log.debug('Calling write on %s' % target_path)
+            if not self.dry:
+                await target_holder._writefile(origin_content, target_path, mtime=origin.time)
             merged = True
 
         if callback is not None:
@@ -234,8 +238,8 @@ class Path:
 
 
 class RemotePath(Path):
-    def __init__(self, path, host, key='~/.ssh/id_rsa', pattern='*', ignore_pattern='//'):
-        super().__init__(path, pattern, ignore_pattern)
+    def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa'):
+        super().__init__(path, dry, pattern, ignore_pattern)
         self.host = host
         try:
             self.key = RemotePath.load_agent_keys()
@@ -293,7 +297,7 @@ class RemotePath(Path):
                 return keys
             except ValueError as exc:                        # pylint: disable=w0703
                 # not quite sure which exceptions to expect here
-                print(f"When fetching agent keys: "
+                log.error(f"When fetching agent keys: "
                       f"ignored exception {type(exc)} - {exc}")
                 return []
 
@@ -313,7 +317,7 @@ class RemotePath(Path):
 
         filename = os.path.expanduser(filename)
         if not os.path.exists(filename):
-            print("No such key file {}".format(filename))
+            log.error("No such key file {}".format(filename))
             return
         with open(filename) as file:
             data = file.read()
@@ -323,13 +327,13 @@ class RemotePath(Path):
                 while True:
                     passphrase = getpass.getpass("Enter passphrase for key {} : ".format(basename))
                     if not passphrase:
-                        print("Ignoring key {}".format(filename))
+                        log.info("Ignoring key {}".format(filename))
                         break
                     try:
                         sshkey = asyncssh.import_private_key(data, passphrase)
                         break
                     except asyncssh.KeyImportError:
-                        print("Wrong passphrase")
+                        log.error("Wrong passphrase")
             return sshkey
 
     def check_connection(self):
@@ -451,8 +455,8 @@ class RemotePath(Path):
 
 
 class LocalPath(Path):
-    def __init__(self, path, pattern='*', ignore_pattern='//'):
-        super().__init__(path, pattern, ignore_pattern)
+    def __init__(self, path, dry=False, pattern='*', ignore_pattern='//'):
+        super().__init__(path, dry, pattern, ignore_pattern)
         self.host = 'local'
 
     def check_connection(self):
@@ -496,7 +500,7 @@ class LocalPath(Path):
         run_wd(path, queue=q, log=True, pattern=self.pattern, ignore_pattern=self.ignore_pattern)
         while True:
             path, isdir, change, mtime = q.get().split()
-            # print(path, isdir, change, mtime)
+            log.debug('Local WD event:' + path, isdir, change, mtime)
             if change != 'D':
                 mtime = None
             self.tasks.put(File(os.path.relpath(path), mtime, self, change))

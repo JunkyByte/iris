@@ -5,5 +5,6 @@ mirror: True
 pattern: '*'
 ignore_pattern: '//'
 
-from_path: ../ideas/test/
+from_path: /Users/adryw/Documents/iris/ideas/test/
 to_path: /home/adryw/test_wow/
+dry: True

@@ -4,10 +4,11 @@ import yaml
 import time
 import os
 import signal
+import logging
 from functools import partial
 from rich.console import Console
 from src.host import RemotePath, LocalPath, run
-
+logging.basicConfig()
 
 class PrettyConsole(Console):
     def __init__(self):
@@ -42,6 +43,8 @@ class PrettyConsole(Console):
 def main():
     # Setup rich
     console = PrettyConsole()
+    log = logging.getLogger('iris')
+    log.setLevel(logging.INFO)
 
     # Setup signal cleanup
     def cleanup(sig, frame):
@@ -59,6 +62,8 @@ def main():
 
     parser = argparse.ArgumentParser(description='TODO: Description')
     parser.add_argument('--config', type=file_path, help='yaml config file path')
+    parser.add_argument('--debug', action='store_true', help='Debug infos')
+    parser.add_argument('--dry', action='store_true', help='Fake run with no file writing')
 
     # Arg parsing and setup
     args = parser.parse_args()
@@ -66,6 +71,11 @@ def main():
         console.print('[red]Error on parameter validation[/red]')
         console.print('Run as `python iris.py --config yaml_file`')
         sys.exit()
+
+    if args.debug:
+        log.setLevel(logging.DEBUG)
+
+    log.debug('DRY RUN: %s' % args.dry)
 
     config = None
     if os.path.isfile(args.config):
@@ -95,8 +105,8 @@ def main():
     to_host = 'local' if to_local else config['to']
 
     # Create Path connections
-    from_path = LocalPath(from_path, pat, npat) if from_local else RemotePath(from_path, from_host, pattern=pat, ignore_pattern=npat)
-    to_path = LocalPath(to_path, pat, npat) if to_local else RemotePath(to_path, to_host, pattern=pat, ignore_pattern=npat)
+    from_path = LocalPath(from_path, args.dry, pat, npat) if from_local else RemotePath(from_path, from_host, args.dry, pat, npat)
+    to_path = LocalPath(to_path, args.dry, pat, npat) if to_local else RemotePath(to_path, to_host, args.dry, pat, npat)
 
     # Create signal after creating from_path and to_path for cleanup
     signal.signal(signal.SIGINT, cleanup)
