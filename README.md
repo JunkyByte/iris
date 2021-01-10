@@ -30,6 +30,8 @@ Inside your terminal you can start iris by typing
 ```
 iris --config config_file.yaml
 ```
+Other options are `--debug` that does not require any explanation and `--dry` which allows you to run iris in test mode,
+no file writing will be actually done (please use this to test your settings without altering your files)
 
 ### Config files
 Config files are in `yaml` format, the following parameters can be specified, the default value of optional is specified below.
@@ -46,10 +48,6 @@ ignore_pattern:  # Patterns for ignore by file name separated by a space
 
 from_path:  # The `from` absolute path
 to_path:  # The `to` absolute path
-
-# optional, default: False
-dry: False # Iris won't do any file writing but only log them
-# ^^^ Please, use this to check your configs are working correctly without consequences on your files.
 ```
 
 Right now iris requires a config file to be passed.
@@ -63,6 +61,7 @@ Hope you find iris useful.
 
 ## Warning:
 During a bidirectional sync if you delete a file from the `to_path` it will be deleted on your `local_path` and vice versa.
+Also files will be merged based on most recent modification, be careful and run in `dry` mode first.
 We do not take any responsability for files lost. Iris is a work in progress, be sure to backup your computer before using it,
 do not run iris as sudo.
 

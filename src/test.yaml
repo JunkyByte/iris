@@ -7,4 +7,3 @@ ignore_pattern: '//'
 
 from_path: /Users/adryw/Documents/iris/ideas/test/
 to_path: /home/adryw/test_wow/
-dry: True
