@@ -57,6 +57,10 @@ Right now iris requires a config file to be passed.
 For remote connections iris will try to load from your `ssh-agent` first, if it fails right now it uses `~/.ssh/id_rsa` as a key.
 (This will be a config option at some point)
 
+## Under the hood
+Iris uses `asyncssh` (which I reccomend) for sftp file monitoring / writing, `aiofile` for async local file writing,
+`watchdog` for monitoring file changes, `rich` for pretty printing, `pyYAML` for configuration files.
+
 ## Contribute / Issues
 Please create an issue if you have any request / problem or want to contribute.
 
