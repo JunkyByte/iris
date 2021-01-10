@@ -28,7 +28,10 @@ class File:
         if isinstance(time, datetime):
             return time
         else:
-            return datetime.fromtimestamp(int(time))
+            if isinstance(time, str):
+                return datetime.fromtimestamp(int(float(time)))
+            else:
+                return datetime.fromtimestamp(int(time))
 
     def fetch_time(self):
         return self.holder.get_time(self.path)
@@ -68,7 +71,7 @@ class RemoteWDThread(Thread):
                     while True:
                         try:
                             path, isdir, change, mtime = (await process.stdout.readline()).split()
-                            log.debug('Remote WD event: ' + path, isdir, change, mtime)
+                            log.debug(f'Remote WD event: {path} {isdir} {change} {mtime}')
                             if change != 'D':
                                 mtime = None
                             self.tasks.put(File(path, mtime, self.holder, change))
@@ -108,6 +111,7 @@ class Path:
         return 'Host %s:%s' % (self.host, self.path)
 
     def relative_path(self, path):
+        path = os.path.abspath(path)
         return path.split(self.path)[1]
 
     @abc.abstractmethod
@@ -500,7 +504,7 @@ class LocalPath(Path):
         run_wd(path, queue=q, log=True, pattern=self.pattern, ignore_pattern=self.ignore_pattern)
         while True:
             path, isdir, change, mtime = q.get().split()
-            log.debug('Local WD event:' + path, isdir, change, mtime)
+            log.debug(f'Local WD event: {path} {isdir} {change} {mtime}')
             if change != 'D':
                 mtime = None
             self.tasks.put(File(os.path.relpath(path), mtime, self, change))
