@@ -10,6 +10,7 @@ from rich.console import Console
 from src.host import RemotePath, LocalPath, run
 logging.basicConfig()
 
+
 class PrettyConsole(Console):
     def __init__(self):
         super().__init__()
@@ -60,7 +61,7 @@ def main():
             console.print('[green]%s[/green] [red] - Config file not found[/red]' % string)
             sys.exit()
 
-    parser = argparse.ArgumentParser(description='TODO: Description')
+    parser = argparse.ArgumentParser(description='iris is a command line tool to sync folders between local and remote')
     parser.add_argument('--config', type=file_path, help='yaml config file path')
     parser.add_argument('--debug', action='store_true', help='Debug infos')
     parser.add_argument('--dry', action='store_true', help='Fake run with no file writing')

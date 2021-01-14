@@ -17,6 +17,15 @@ from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
 
 
+def run(tasks):
+    if not isinstance(tasks, list):
+        tasks = [tasks]
+
+    loop = asyncio.get_event_loop()
+    res = loop.run_until_complete(asyncio.gather(*tasks))[0]
+    return res
+
+
 class File:
     def __init__(self, path, time, path_holder, change_type=None):
         self.path = path
@@ -44,55 +53,6 @@ class File:
             return 'Path: %s - %s - %s' % (self.path, self.time.ctime(), self.time.timestamp())
         except AttributeError:
             return 'Path: %s - %s - %s' % (self.path, None, None)
-
-
-class RemoteWDThread(Thread):
-    def __init__(self, path, host, key, tasks, holder, pattern='*', ignore_pattern='//'):
-        Thread.__init__(self)
-        self.path = path
-        self.host = host
-        self.key = key
-        self.holder = holder
-        self.process = None
-        self.tasks = tasks
-        self.pattern = pattern
-        self.ignore_pattern = ignore_pattern
-
-    def run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def async_wd():
-            async with asyncssh.connect(self.host, client_keys=self.key, keepalive_interval=60) as conn:
-                async with conn.create_process('python -u /tmp/iris_wd.py',
-                                               input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
-                                               stderr=asyncssh.STDOUT) as process:
-                    self.process = process
-                    while True:
-                        try:
-                            path, isdir, change, mtime = (await process.stdout.readline()).split()
-                            log.debug(f'Remote WD event: {path} {isdir} {change} {mtime}')
-                            if change != 'D':
-                                mtime = None
-                            self.tasks.put(File(path, mtime, self.holder, change))
-                        except ValueError as e:
-                            line = True
-                            while line:
-                                line = await process.stdout.readline()
-                                log.debug(line)
-                                log.debug(e)
-                            break
-        loop.run_until_complete(async_wd())
-        loop.close()
-
-
-def run(tasks):  # This runs tasks
-    if not isinstance(tasks, list):
-        tasks = [tasks]
-
-    loop = asyncio.get_event_loop()
-    res = loop.run_until_complete(asyncio.gather(*tasks))[0]
-    return res
 
 
 class Path:
@@ -129,7 +89,7 @@ class Path:
             return self._empty()
 
         # Ignore some files (this is a good place as is implementation independent)
-        if target_path.endswith(('.md5', '.swp', '.swx', '.DS_Store')) or self.has_ignore(target_path):
+        if target_path.endswith(('.swp', '.swx', '.DS_Store')) or self.has_ignore(target_path):
             log.debug('Ignored file %s' % origin)
             return self._empty()
 
@@ -248,7 +208,11 @@ class RemotePath(Path):
         try:
             self.key = RemotePath.load_agent_keys()
         except ValueError:
-            self.key = RemotePath.import_private_key(key)
+            try:
+                self.key = RemotePath.import_private_key(key)
+            except FileNotFoundError:
+                self.key = None
+                self.password = getpass.getpass('No valid key found, specify a password for auth: ')
         self.conn = None
         self.sftp = None
 
@@ -264,7 +228,8 @@ class RemotePath(Path):
     @asynccontextmanager
     async def ssh_context(self):
         if self.conn is None:
-            self.conn = await asyncssh.connect(self.host, client_keys=self.key, keepalive_interval=60)
+            auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
+            self.conn = await asyncssh.connect(self.host, keepalive_interval=60, **auth)
 
         yield self.conn
 
@@ -299,7 +264,7 @@ class RemotePath(Path):
                 keys = await agent_client.get_keys()
                 agent_client.close()
                 return keys
-            except ValueError as exc:                        # pylint: disable=w0703
+            except ValueError as exc:
                 # not quite sure which exceptions to expect here
                 log.error(f"When fetching agent keys: "
                       f"ignored exception {type(exc)} - {exc}")
@@ -322,7 +287,7 @@ class RemotePath(Path):
         filename = os.path.expanduser(filename)
         if not os.path.exists(filename):
             log.error("No such key file {}".format(filename))
-            return
+            raise FileNotFoundError
         with open(filename) as file:
             data = file.read()
             try:
@@ -456,6 +421,46 @@ class RemotePath(Path):
         if self.wd is None:
             return
         self.wd.process.terminate()
+
+
+class RemoteWDThread(Thread):
+    def __init__(self, path, host, key, tasks, holder, pattern='*', ignore_pattern='//'):
+        Thread.__init__(self)
+        self.path = path
+        self.host = host
+        self.key = key
+        self.holder = holder
+        self.process = None
+        self.tasks = tasks
+        self.pattern = pattern
+        self.ignore_pattern = ignore_pattern
+
+    def run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def async_wd():
+            async with asyncssh.connect(self.host, client_keys=self.key, keepalive_interval=60) as conn:
+                async with conn.create_process('python -u /tmp/iris_wd.py',
+                                               input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
+                                               stderr=asyncssh.STDOUT) as process:
+                    self.process = process
+                    while True:
+                        try:
+                            path, isdir, change, mtime = (await process.stdout.readline()).split()
+                            log.debug(f'Remote WD event: {path} {isdir} {change} {mtime}')
+                            if change != 'D':
+                                mtime = None
+                            self.tasks.put(File(path, mtime, self.holder, change))
+                        except ValueError as e:
+                            line = True
+                            while line:
+                                line = await process.stdout.readline()
+                                log.debug(line)
+                                log.debug(e)
+                            break
+        loop.run_until_complete(async_wd())
+        loop.close()
 
 
 class LocalPath(Path):
