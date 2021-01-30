@@ -1,7 +1,7 @@
 import argparse
+import time
 import sys
 import yaml
-import time
 import os
 import signal
 import logging
@@ -83,8 +83,8 @@ def main():
         with open(args.config, 'r') as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
 
-    KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern']
-    DEFAULTS = {'mirror': True, 'pattern': '*', 'ignore_pattern': '//'}
+    KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern', 'from_port', 'to_port']
+    DEFAULTS = {'mirror': True, 'pattern': '*', 'ignore_pattern': '//', 'from_port': 22, 'to_port': 22}
 
     if all([k in config.keys() or k in DEFAULTS.keys() for k in KEYS]):
         config = {**DEFAULTS, **config}
@@ -101,13 +101,22 @@ def main():
     pat = config['pattern']
     npat = config['ignore_pattern']
     mirror = config['mirror']
+    from_port = config['from_port']
+    to_port = config['to_port']
 
     from_host = 'local' if from_local else config['from']
     to_host = 'local' if to_local else config['to']
 
     # Create Path connections
-    from_path = LocalPath(from_path, args.dry, pat, npat) if from_local else RemotePath(from_path, from_host, args.dry, pat, npat)
-    to_path = LocalPath(to_path, args.dry, pat, npat) if to_local else RemotePath(to_path, to_host, args.dry, pat, npat)
+    if from_local:
+        from_path = LocalPath(from_path, args.dry, pat, npat)
+    else:
+        from_path = RemotePath(from_path, from_host, args.dry, pat, npat, port=from_port)
+
+    if to_local:
+        to_path = LocalPath(to_path, args.dry, pat, npat)
+    else:
+        to_path = RemotePath(to_path, to_host, args.dry, pat, npat, port=to_port)
 
     # Create signal after creating from_path and to_path for cleanup
     signal.signal(signal.SIGINT, cleanup)

@@ -47,7 +47,7 @@ class WatchdogManager:
                 if os.path.isfile(path):
                     return
 
-            msg = path + ' ' + str(isdir) + ' ' + change + ' ' + str(t)
+            msg = path + '%' + str(isdir) + '%' + change + '%' + str(t)
             if self.stdout:
                 print(msg)
             else:

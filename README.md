@@ -40,7 +40,9 @@ no file writing will be actually done (please use this to test your settings wit
 Config files are in `yaml` format, the following parameters can be specified, the default value of optional is specified below.
 ```yaml
 from:  # local or the host for sftp (e.g. 104.30.12.61)
+from_port:  # Port to use for ssh on `from`
 to:  # local or the host for sftp
+to_port:  # Port to use for ssh on `to`
 mirror:  # Whether to mirror sync (from <- to) (optional, default: True)
 
 # optional, default: '*', e.g. '*.yaml *.txt'

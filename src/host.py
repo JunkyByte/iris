@@ -202,7 +202,7 @@ class Path:
 
 
 class RemotePath(Path):
-    def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa'):
+    def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa', port=22):
         super().__init__(path, dry, pattern, ignore_pattern)
         self.host = host
         try:
@@ -213,25 +213,34 @@ class RemotePath(Path):
             except FileNotFoundError:
                 self.key = None
                 self.password = getpass.getpass('No valid key found, specify a password for auth: ')
-        self.conn = None
-        self.sftp = None
 
-    @asynccontextmanager
-    async def sftp_context(self):
-        if self.sftp is None:
-            async with self.ssh_context() as conn:
-                self.sftp = await conn.start_sftp_client(env={'block_size': 32768})
+        self._conn = None
+        self._sftp = None
+        self._last_check = 0
+        self.lock_mkdir = asyncio.Lock()
+        self.port = port
 
-        async with self.ssh_context() as conn:
-            yield conn, self.sftp
+    from async_property import async_property
+    @property
+    def conn(self):
+        if self._conn is None:
+            return self.ssh_connect()
+        return self._conn
 
-    @asynccontextmanager
-    async def ssh_context(self):
-        if self.conn is None:
-            auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
-            self.conn = await asyncssh.connect(self.host, keepalive_interval=60, **auth)
+    @property
+    def sftp(self):
+        if self._sftp is None:
+            return self.sftp_connect()
+        return self._sftp
 
-        yield self.conn
+    async def sftp_connect(self):  # This is awaited on check connection
+        self._sftp = await self.conn.start_sftp_client(env={'block_size': 32768})
+        return self._sftp
+
+    async def ssh_connect(self):
+        auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
+        self._conn = await asyncssh.connect(self.host, port=self.port, **auth)
+        return self._conn
 
     def load_agent_keys(agent_path=None):
         """
@@ -267,7 +276,7 @@ class RemotePath(Path):
             except ValueError as exc:
                 # not quite sure which exceptions to expect here
                 log.error(f"When fetching agent keys: "
-                      f"ignored exception {type(exc)} - {exc}")
+                          f"ignored exception {type(exc)} - {exc}")
                 return []
 
         agent_path = agent_path or os.environ.get('SSH_AUTH_SOCK', None)
@@ -309,39 +318,43 @@ class RemotePath(Path):
         return run(self._check_connection())
 
     async def _check_connection(self):
+        if time.time() - self._last_check < 60:
+            return True
+        self._last_check = time.time()
+
+        if self._conn is None:
+            await self.conn  # This will initialize the connections  # TODO: Is this the best method or not? is more concise
+            await self.sftp
+
         # Check connection to remote host
-        async with self.sftp_context() as context:
-            conn, sftp = context
-            try:
-                # Check path is valid
-                if await sftp.isdir(self.path):
-                    return True
-                return False
-            except TimeoutError:
-                return False
+        try:
+            # Check path is valid
+            if await self.sftp.isdir(self.path):
+                return True
+            return False
+        except TimeoutError:
+            return False
 
     def all_files(self):
         return run(self._files_path())  # This returns all files in default path
 
     async def _recursive_scan(self, path, files):
-        async with self.sftp_context() as context:
-            conn, sftp = context
-            if await sftp.isfile(path):
-                return [[(await sftp.stat(path)).mtime, path]]
+        if await self.sftp.isfile(path):
+            return [[(await self.sftp.stat(path)).mtime, path]]
 
-            tasks = set()
-            async for f in sftp.scandir(path):
-                if f.filename in ('.', '..'):  # Ignore reference to self and parent
-                    continue
+        tasks = set()
+        async for f in self.sftp.scandir(path):
+            if f.filename in ('.', '..'):  # Ignore reference to self and parent
+                continue
 
-                remotepath = os.path.join(path, f.filename)
-                if stat.S_ISDIR(f.attrs.permissions):
-                    tasks.add(asyncio.create_task(self._recursive_scan(remotepath, files)))
-                else:
-                    files.append([f.attrs.mtime, remotepath])
+            remotepath = os.path.join(path, f.filename)
+            if stat.S_ISDIR(f.attrs.permissions):
+                tasks.add(asyncio.create_task(self._recursive_scan(remotepath, files)))
+            else:
+                files.append([f.attrs.mtime, remotepath])
 
-            if tasks:
-                await asyncio.gather(*tasks)
+        if tasks:
+            await asyncio.gather(*tasks)
         return files
 
     async def _files_path(self, path=None):
@@ -353,15 +366,12 @@ class RemotePath(Path):
     async def get_content(self, path):
         fd = BytesIO()
         try:
-            async with self.sftp_context() as context:
-                conn, sftp = context
-
-                async with sftp.open(path, 'rb') as src:
-                    while True:
-                        data = await src.read(32768)
-                        if not data:
-                            break
-                        fd.write(data)
+            async with self.sftp.open(path, 'rb') as src:
+                while True:
+                    data = await src.read(32768)
+                    if not data:
+                        break
+                    fd.write(data)
         except asyncssh.sftp.SFTPNoSuchFile:
             return None
 
@@ -378,25 +388,22 @@ class RemotePath(Path):
 
     async def _writefile(self, origin, target, mtime):
         origin = BytesIO(origin)
-        async with self.sftp_context() as context:
-            conn, sftp = context
-            await sftp.makedirs(os.path.dirname(target), exist_ok=True)
-            async with sftp.open(target, 'wb', asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())) as dst:
-                while True:
-                    data = origin.read(32768)
-                    if not data:
-                        break
-                    await dst.write(data)
-                await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
+        async with self.lock_mkdir:
+            await self.sftp.makedirs(os.path.dirname(target), exist_ok=True)
+
+        async with self.sftp.open(target, 'wb', asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())) as dst:
+            while True:
+                data = origin.read(32768)
+                if not data:
+                    break
+                await dst.write(data)
+            await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
 
     async def _deletefile(self, target):
-        async with self.sftp_context() as context:
-            conn, sftp = context
-
-            try:
-                await sftp.remove(target)
-            except (asyncssh.process.ProcessError, asyncssh.sftp.SFTPNoSuchFile):
-                pass
+        try:
+            await self.sftp.remove(target)
+        except (asyncssh.process.ProcessError, asyncssh.sftp.SFTPNoSuchFile):
+            pass
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
@@ -406,12 +413,10 @@ class RemotePath(Path):
         src_path = os.path.abspath(src.watchdog_service.__file__)
 
         async def upload_watchdog():
-            async with self.sftp_context() as context:
-                conn, sftp = context
-                await sftp.put(src_path, '/tmp/iris_wd.py')
+            await self.sftp.put(src_path, '/tmp/iris_wd.py')
 
         run(upload_watchdog())
-        self.wd = RemoteWDThread(self.path, self.host, self.key, self.tasks, self)
+        self.wd = RemoteWDThread(self.path, self.host, self.key, self.tasks, self, port=self.port)
         self.wd.start()
 
         while self.wd.process is None:
@@ -422,13 +427,19 @@ class RemotePath(Path):
             return
         self.wd.process.terminate()
 
+    def next_task(self):
+        # Be sure the connection does not drop here
+        self.check_connection()
+        return super().next_task()
+
 
 class RemoteWDThread(Thread):
-    def __init__(self, path, host, key, tasks, holder, pattern='*', ignore_pattern='//'):
+    def __init__(self, path, host, key, tasks, holder, port=22, pattern='*', ignore_pattern='//'):
         Thread.__init__(self)
         self.path = path
         self.host = host
         self.key = key
+        self.port = port
         self.holder = holder
         self.process = None
         self.tasks = tasks
@@ -440,14 +451,15 @@ class RemoteWDThread(Thread):
         asyncio.set_event_loop(loop)
 
         async def async_wd():
-            async with asyncssh.connect(self.host, client_keys=self.key, keepalive_interval=60) as conn:
+            async with asyncssh.connect(self.host, client_keys=self.key, port=self.port,
+                                        keepalive_interval=60, keepalive_count_max=10) as conn:
                 async with conn.create_process('python -u /tmp/iris_wd.py',
                                                input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
                                                stderr=asyncssh.STDOUT) as process:
                     self.process = process
                     while True:
                         try:
-                            path, isdir, change, mtime = (await process.stdout.readline()).split()
+                            path, isdir, change, mtime = (await process.stdout.readline()).split('%')
                             log.debug(f'Remote WD event: {path} {isdir} {change} {mtime}')
                             if change != 'D':
                                 mtime = None
@@ -465,7 +477,7 @@ class RemoteWDThread(Thread):
 
 class LocalPath(Path):
     def __init__(self, path, dry=False, pattern='*', ignore_pattern='//'):
-        super().__init__(path, dry, pattern, ignore_pattern)
+        super().__init__(os.path.expanduser(path), dry, pattern, ignore_pattern)
         self.host = 'local'
 
     def check_connection(self):
@@ -508,11 +520,11 @@ class LocalPath(Path):
         from src.watchdog_service import run_wd
         run_wd(path, queue=q, log=True, pattern=self.pattern, ignore_pattern=self.ignore_pattern)
         while True:
-            path, isdir, change, mtime = q.get().split()
+            path, isdir, change, mtime = q.get().split('%')
             log.debug(f'Local WD event: {path} {isdir} {change} {mtime}')
             if change != 'D':
                 mtime = None
-            self.tasks.put(File(os.path.relpath(path), mtime, self, change))
+            self.tasks.put(File(os.path.relpath(path), mtime, self, change))  # TODO: This works but is not abs, why?
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
