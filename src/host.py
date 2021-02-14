@@ -219,8 +219,8 @@ class RemotePath(Path):
         self._conn = None
         self._sftp = None
         self._last_check = 0
-        self._lock_dir = []
-        self._lock_sem = asyncio.Semaphore(128)  # Max open files?
+        #self._lock_dir = []
+        self._lock_dir = RemotePath.DirLocker(self.path)
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
         self.port = port
 
@@ -387,23 +387,66 @@ class RemotePath(Path):
         except (asyncssh.process.ProcessError, asyncssh.sftp.SFTPNoSuchFile):
             raise FileNotFoundError
 
-    async def _writefile(self, origin, target, mtime):
-        dir_name = os.path.dirname(target)
+    class DirLocker:
+        def __init__(self, base):
+            self.locks = {}
+            self.base = os.path.dirname(base)
 
-        async with self._lock_sem:  # TODO Now is much faster but what's the correct way?
-            s = len(self._lock_dir)  # TODO find a way to not use makedirs on everybody? Discard directly if isdir -> True
-            last_s = None  # TODO: Maybe ask Ron for suggestion
+        def lock_names(self, file_path):
+            paths = []
+
+            p = file_path
             while True:
-                if s != last_s:
-                    wip = any([dir_name in s or s in dir_name for s in self._lock_dir])
-                    last_s = s
-                if not wip:
-                    self._lock_dir.append(dir_name)
-                    await self.sftp.makedirs(dir_name, exist_ok=True)
-                    self._lock_dir.remove(dir_name)
+                p = os.path.dirname(p)
+                if p == self.base:
                     break
-                s = len(self._lock_dir)
-                await asyncio.sleep(1e-2)  # TODO: This is terrible on cpu
+                elif p == '/':
+                    raise ValueError
+                paths.append(p)
+            return paths
+        
+        async def create_locks(self, file_path, sftp):
+            """
+            Create new locks if they do not exist and return them
+            """
+            lock_names = self.lock_names(file_path)
+
+            l = []
+            for lock in lock_names:
+                if lock not in self.locks:  # Does not exist -> create it
+                    self.locks[lock] = asyncio.Lock()
+                    if await sftp.isdir(lock):  # If the directory does not exists create a lock for it
+                        self.locks[lock] = None
+
+                if self.locks[lock] is not None:  # If is an actual lock take it
+                    l.append(self.locks[lock])
+            return l, lock_names
+
+        async def acquire_locks(self, lock_names):
+            for n in lock_names:
+                if self.locks[n] is not None:
+                    await self.locks[n].acquire()  # Acquire these locks
+
+        async def release_locks(self, locks, lock_names):
+            for l in locks:  # Release all the locks we acquired
+                l.release()
+            for n in lock_names:  # These folders have been created so we can set them as None
+                self.locks[n] = None
+
+    async def _writefile(self, origin, target, mtime):
+        # Create directories in a concurrently safe way
+        t = time.time()
+        locks, lock_names = await self._lock_dir.create_locks(target, self.sftp) # Created needed locks
+        print('Time to create locks', time.time() - t)
+        t = time.time()
+        await self._lock_dir.acquire_locks(lock_names)
+        print('Time to acquire %s locks' % len(locks), time.time() - t)
+        t = time.time()
+        await self.sftp.makedirs(os.path.dirname(target), exist_ok=True)  # Ask sftp to create the folder
+        print('Time to create dirs', time.time() - t)
+        t = time.time()
+        await self._lock_dir.release_locks(locks, lock_names)
+        print('Time to release locks', time.time() - t)
 
         data = BytesIO(origin).read()
         async with self.open_sem:
