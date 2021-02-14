@@ -10,6 +10,8 @@ from rich.console import Console
 from src.host import RemotePath, LocalPath, run
 logging.basicConfig()
 
+t = time.time()
+
 
 class PrettyConsole(Console):
     def __init__(self):
@@ -160,6 +162,8 @@ def main():
 
         console.print('[bold blue]Initial sync completed')
 
+    print(time.time() - t)  # TODO Pattern works as **Library/** ... which is not ideal
+
     with console.status('[bold blue] Launching watchdog programs') as status:
         from_path.start_watchdog()
 
@@ -170,17 +174,21 @@ def main():
 
         req = []
         while True:  # Process requests for watchdogs
-            from_req = from_path.next_task()
+            from_req = from_path.next_task()  # TODO: If a large amount of files is created on one side or the other this is slow, should take all tasks possible?
             to_req = to_path.next_task()
 
-            if from_req is not None:
-                req.append(from_path.write(from_req, to_path, console.callback_write(from_host, from_req.path, to_host)))
-            if to_req is not None:
-                req.append(to_path.write(to_req, from_path, console.callback_write(from_host, to_req.path, to_host, True)))
+            if from_req:
+                for r in from_req:
+                    req.append(from_path.write(r, to_path, console.callback_write(from_host, r.path, to_host)))
+            if to_req:
+                for r in to_req:
+                    req.append(to_path.write(r, from_path, console.callback_write(from_host, r.path, to_host, True)))
 
             if req:
                 run(req)
                 req = []
+
+            time.sleep(1e-2)
 
 
 if __name__ == '__main__':

@@ -156,14 +156,16 @@ class Path:
 
         return merged
 
-    def next_task(self):
+    def next_task(self, n=100):
         if self.tasks is None:
             return None
 
+        res = []
         try:
-            return self.tasks.get(timeout=1e-2)
+            for i in range(n):
+                res.append(self.tasks.get_nowait())
         except Empty:
-            return None
+            return res
 
     @abc.abstractmethod
     async def _writefile(self, origin, target, mtime):
@@ -217,10 +219,11 @@ class RemotePath(Path):
         self._conn = None
         self._sftp = None
         self._last_check = 0
-        self.lock_mkdir = asyncio.Lock()
+        self._lock_dir = []
+        self._lock_sem = asyncio.Semaphore(128)  # Max open files?
+        self.open_sem = asyncio.Semaphore(128)  # Max open files?
         self.port = port
 
-    from async_property import async_property
     @property
     def conn(self):
         if self._conn is None:
@@ -366,12 +369,10 @@ class RemotePath(Path):
     async def get_content(self, path):
         fd = BytesIO()
         try:
-            async with self.sftp.open(path, 'rb') as src:
-                while True:
-                    data = await src.read(32768)
-                    if not data:
-                        break
-                    fd.write(data)
+            async with self.open_sem:
+                async with self.sftp.open(path, 'rb') as src:
+                    data = await src.read()
+            fd.write(data)
         except asyncssh.sftp.SFTPNoSuchFile:
             return None
 
@@ -387,17 +388,28 @@ class RemotePath(Path):
             raise FileNotFoundError
 
     async def _writefile(self, origin, target, mtime):
-        origin = BytesIO(origin)
-        async with self.lock_mkdir:
-            await self.sftp.makedirs(os.path.dirname(target), exist_ok=True)
+        dir_name = os.path.dirname(target)
 
-        async with self.sftp.open(target, 'wb', asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())) as dst:
+        async with self._lock_sem:  # TODO Now is much faster but what's the correct way?
+            s = len(self._lock_dir)  # TODO find a way to not use makedirs on everybody? Discard directly if isdir -> True
+            last_s = None  # TODO: Maybe ask Ron for suggestion
             while True:
-                data = origin.read(32768)
-                if not data:
+                if s != last_s:
+                    wip = any([dir_name in s or s in dir_name for s in self._lock_dir])
+                    last_s = s
+                if not wip:
+                    self._lock_dir.append(dir_name)
+                    await self.sftp.makedirs(dir_name, exist_ok=True)
+                    self._lock_dir.remove(dir_name)
                     break
+                s = len(self._lock_dir)
+                await asyncio.sleep(1e-2)  # TODO: This is terrible on cpu
+
+        data = BytesIO(origin).read()
+        async with self.open_sem:
+            async with self.sftp.open(target, 'wb', asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())) as dst:
                 await dst.write(data)
-            await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
+                await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
 
     async def _deletefile(self, target):
         try:
@@ -464,7 +476,7 @@ class RemoteWDThread(Thread):
                             if change != 'D':
                                 mtime = None
                             self.tasks.put(File(path, mtime, self.holder, change))
-                        except ValueError as e:
+                        except Exception as e:
                             line = True
                             while line:
                                 line = await process.stdout.readline()
@@ -479,6 +491,7 @@ class LocalPath(Path):
     def __init__(self, path, dry=False, pattern='*', ignore_pattern='//'):
         super().__init__(os.path.expanduser(path), dry, pattern, ignore_pattern)
         self.host = 'local'
+        self.open_sem = asyncio.Semaphore(128)  # Max open files?
 
     def check_connection(self):
         if os.path.isdir(self.path):
@@ -495,8 +508,9 @@ class LocalPath(Path):
         return files
 
     async def get_content(self, path):
-        async with async_open(path, 'rb') as f:
-            return await f.read()
+        async with self.open_sem:
+            async with async_open(path, 'rb') as f:
+                return await f.read()
 
     async def get_file(self, path):
         return File(path, pathlib.Path(path).stat().st_mtime, self)
@@ -506,8 +520,9 @@ class LocalPath(Path):
 
     async def _writefile(self, origin, target, mtime):
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        async with async_open(target, 'wb') as f:
-            await f.write(origin)
+        async with self.open_sem:
+            async with async_open(target, 'wb') as f:
+                await f.write(origin)
         os.utime(target, (mtime.timestamp(), mtime.timestamp()))
 
     async def _deletefile(self, target):

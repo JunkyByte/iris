@@ -1,7 +1,6 @@
 import time
 import sys
 import platform
-import pathlib
 import os
 from datetime import datetime, timedelta
 from watchdog.observers import Observer
@@ -36,7 +35,7 @@ class WatchdogManager:
     def log_change(self, path, isdir=False, change='M'):
         try:
             if change != 'D':
-                t = pathlib.Path(path).stat().st_mtime
+                t = os.stat(path).st_mtime
 
                 # Skip if too close to last event already dispatched (on same file)
                 if self.prev_ev['path'] == path and datetime.fromtimestamp(time.time()) - self.prev_ev['time'] < timedelta(seconds=0.5):

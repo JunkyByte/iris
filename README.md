@@ -24,7 +24,7 @@ pip install .
 ### Remote installation
 On remote host you do not need all dependencies, if you have a working python3 install the watchdog package and you should be set
 ```
-pip install watchdog
+pip install watchdog pathlib
 ```
 
 
@@ -60,7 +60,7 @@ For remote connections iris will try to load from your `ssh-agent` first, if it 
 (This will be a config option at some point)
 
 ## Under the hood
-Iris uses `asyncssh` (which I reccomend) for sftp file monitoring / writing, `aiofile` for async local file writing,
+Iris uses `asyncssh` (which I recommend) for sftp file monitoring / writing, `aiofile` for async local file writing,
 `watchdog` for monitoring file changes, `rich` for pretty printing, `pyYAML` for configuration files.
 
 ## Contribute / Issues
