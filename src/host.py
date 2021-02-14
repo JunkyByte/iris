@@ -404,7 +404,7 @@ class RemotePath(Path):
                     raise ValueError
                 paths.append(p)
             return paths
-        
+
         async def create_locks(self, file_path, sftp):
             """
             Create new locks if they do not exist and return them
@@ -423,6 +423,7 @@ class RemotePath(Path):
             return l, lock_names
 
         async def acquire_locks(self, lock_names):
+            print(self.locks)
             for n in lock_names:
                 if self.locks[n] is not None:
                     await self.locks[n].acquire()  # Acquire these locks
@@ -435,7 +436,7 @@ class RemotePath(Path):
 
     async def _writefile(self, origin, target, mtime):
         # Create directories in a concurrently safe way
-        t = time.time()
+        t = time.time()  # TODO add sem
         locks, lock_names = await self._lock_dir.create_locks(target, self.sftp) # Created needed locks
         print('Time to create locks', time.time() - t)
         t = time.time()
