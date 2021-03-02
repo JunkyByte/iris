@@ -3,7 +3,7 @@ to: 104.196.18.97
 mirror: False
 
 pattern: '*'
-ignore_pattern: '**.git/**'
+ignore_pattern: '.git/'
 
 from_path: /Users/adryw/Documents/iris/ideas/test/
 to_path: /home/adryw/sync/

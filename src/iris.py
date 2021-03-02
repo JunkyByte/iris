@@ -10,8 +10,6 @@ from rich.console import Console
 from src.host import RemotePath, LocalPath, run
 logging.basicConfig()
 
-t = time.time()
-
 
 class PrettyConsole(Console):
     def __init__(self):
@@ -162,8 +160,6 @@ def main():
 
         console.print('[bold blue]Initial sync completed')
 
-    print(time.time() - t)  # TODO Pattern works as **Library/** ... which is not ideal
-
     with console.status('[bold blue] Launching watchdog programs') as status:
         from_path.start_watchdog()
 
@@ -174,7 +170,7 @@ def main():
 
         req = []
         while True:  # Process requests for watchdogs
-            from_req = from_path.next_task()  # TODO: If a large amount of files is created on one side or the other this is slow, should take all tasks possible?
+            from_req = from_path.next_task()
             to_req = to_path.next_task()
 
             if from_req:

@@ -7,14 +7,20 @@ import getpass
 import stat
 import time
 import logging
+import posixpath
 from io import BytesIO
 from datetime import datetime
 from aiofile import async_open
-from contextlib import asynccontextmanager
 from queue import Queue, Empty
 from threading import Thread
 from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
+
+
+def enhance_ignore(pattern):
+    if pattern.endswith('/'):  # Automatically append an * if a directory is specified
+        pattern = pattern + '*'
+    return pattern
 
 
 def run(tasks):
@@ -61,11 +67,15 @@ class Path:
         self.host = None
         self.dry = dry
         self.pattern = pattern
-        self.has_pattern = lambda p: any([fnmatchcase(p, pat) for pat in self.pattern.split()])
         self.ignore_pattern = ignore_pattern
-        self.has_ignore = lambda p: any([fnmatchcase(p, pat) for pat in self.ignore_pattern.split()])
         self.wd = None
         self.tasks = None
+
+    def has_pattern(self, p, path):
+        return any([fnmatchcase(p.split(path)[1], pat) for pat in self.pattern.split()])
+
+    def has_ignore(self, p, path):
+        return any([fnmatchcase(p.split(path)[1], pat) for pat in self.ignore_pattern.split()])
 
     def __repr__(self):
         return 'Host %s:%s' % (self.host, self.path)
@@ -85,12 +95,12 @@ class Path:
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
 
-        if not self.has_pattern(target_path):
+        # Ignore some files (this is a good place as is implementation independent)
+        if target_path.endswith(('.swp', '.swx', '.DS_Store')) or self.has_ignore(target_path, target_holder.path):
+            log.debug('Ignored file %s' % origin)
             return self._empty()
 
-        # Ignore some files (this is a good place as is implementation independent)
-        if target_path.endswith(('.swp', '.swx', '.DS_Store')) or self.has_ignore(target_path):
-            log.debug('Ignored file %s' % origin)
+        if not self.has_pattern(target_path, target_holder.path):
             return self._empty()
 
         if origin.change_type in [None, 'C', 'M']:
@@ -219,11 +229,9 @@ class RemotePath(Path):
         self._conn = None
         self._sftp = None
         self._last_check = 0
-        #self._lock_dir = []
-        self._lock_dir = RemotePath.DirLocker(self.path)
-        self.lock_sem = asyncio.Semaphore(16)
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
         self.port = port
+        self.req = set()
 
     @property
     def conn(self):
@@ -241,9 +249,15 @@ class RemotePath(Path):
         self._sftp = await self.conn.start_sftp_client(env={'block_size': 32768})
         return self._sftp
 
+    def connection_lost(self, exc):
+        print('CONNECTION LOST')
+        run(self._check_connection())
+        print('CONNECTION RESTORED')
+
     async def ssh_connect(self):
         auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
         self._conn = await asyncssh.connect(self.host, port=self.port, **auth)
+        self._conn.connection_lost = self.connection_lost
         return self._conn
 
     def load_agent_keys(agent_path=None):
@@ -322,15 +336,16 @@ class RemotePath(Path):
         return run(self._check_connection())
 
     async def _check_connection(self):
-        if time.time() - self._last_check < 60:
+        if time.time() - self._last_check < 30:
             return True
         self._last_check = time.time()
 
         if self._conn is None:
-            await self.conn  # This will initialize the connections  # TODO: Is this the best method or not? is more concise
+            await self.conn  # This will initialize the connections
             await self.sftp
 
         # Check connection to remote host
+        # TODO: We could add here a retry (not reconnect) just to be sure that a small internet interruption does not crashes everything
         try:
             # Check path is valid
             if await self.sftp.isdir(self.path):
@@ -340,7 +355,10 @@ class RemotePath(Path):
             return False
 
     def all_files(self):
-        return run(self._files_path())  # This returns all files in default path
+        res = run(self._files_path())  # This returns all files in default path
+        if not isinstance(res, list):
+            return [res]
+        return res
 
     async def _recursive_scan(self, path, files):
         if await self.sftp.isfile(path):
@@ -374,7 +392,7 @@ class RemotePath(Path):
                 async with self.sftp.open(path, 'rb') as src:
                     data = await src.read()
             fd.write(data)
-        except asyncssh.sftp.SFTPNoSuchFile:
+        except asyncssh.SFTPNoSuchFile:
             return None
 
         return fd.getvalue()
@@ -385,72 +403,24 @@ class RemotePath(Path):
     async def get_file(self, path):
         try:
             return await self._files_path(path)
-        except (asyncssh.process.ProcessError, asyncssh.sftp.SFTPNoSuchFile):
+        except (asyncssh.ProcessError, asyncssh.SFTPNoSuchFile):
             raise FileNotFoundError
 
-    class DirLocker:
-        def __init__(self, base):
-            self.locks = {}
-            self.base = os.path.dirname(base)
-
-        def lock_names(self, file_path):
-            paths = []
-
-            p = file_path
-            while True:
-                p = os.path.dirname(p)
-                if p == self.base:
-                    break
-                elif p == '/':
-                    raise ValueError
-                paths.append(p)
-            return paths
-
-        async def create_locks(self, file_path, sftp):
-            """
-            Create new locks if they do not exist and return them
-            """
-            lock_names = self.lock_names(file_path)
-
-            l = []
-            for lock in lock_names:
-                if lock not in self.locks:  # Does not exist -> create it
-                    self.locks[lock] = asyncio.Lock()
-                if self.locks[lock] is not None:  # If is an actual lock take it
-                    l.append(self.locks[lock])
-            return l, lock_names
-
-        async def acquire_locks(self, lock_names):
-            print(self.locks)
-            for n in lock_names:
-                if self.locks[n] is not None:
-                    await self.locks[n].acquire()  # Acquire these locks
-
-        async def release_locks(self, locks, lock_names):
-            for l in locks:  # Release all the locks we acquired
-                try:
-                    l.release()
-                except RuntimeError:
-                    pass
-            for n in lock_names:  # These folders have been created so we can set them as None
-                self.locks[n] = None
-
     async def _writefile(self, origin, target, mtime):
-        # Create directories in a concurrently safe way
-        if not await self.sftp.isdir(os.path.dirname(target)):
-            async with self.lock_sem:
-                t = time.time()
-                locks, lock_names = await self._lock_dir.create_locks(target, self.sftp)
-                print('time to create locks', time.time() - t)
-                t = time.time()
-                await self._lock_dir.acquire_locks(lock_names)
-                print('time to acquire %s locks' % len(locks), time.time() - t)
-                t = time.time()
-                await self.sftp.makedirs(os.path.dirname(target), exist_ok=True)  # ask sftp to create the folder
-                print('time to create dirs', time.time() - t)
-                t = time.time()
-                await self._lock_dir.release_locks(locks, lock_names)
-                print('time to release locks', time.time() - t)
+        path = self.sftp.encode(os.path.dirname(target))
+        curpath = b'/' if posixpath.isabs(path) else (self.sftp._cwd or b'')
+
+        for part in path.split(b'/'):
+            curpath = posixpath.join(curpath, part)
+
+            try:
+                await self.sftp.mkdir(curpath, asyncssh.SFTPAttrs())
+            except asyncssh.SFTPFailure:
+                mode = await self.sftp._mode(curpath)
+
+                if not stat.S_ISDIR(mode):
+                    path = curpath.decode('utf-8', errors='replace')
+                    raise asyncssh.SFTPFailure('%s is not a directory' % path) from None
 
         data = BytesIO(origin).read()
         async with self.open_sem:
@@ -461,7 +431,7 @@ class RemotePath(Path):
     async def _deletefile(self, target):
         try:
             await self.sftp.remove(target)
-        except (asyncssh.process.ProcessError, asyncssh.sftp.SFTPNoSuchFile):
+        except (asyncssh.ProcessError, asyncssh.SFTPNoSuchFile):
             pass
 
     def start_watchdog(self):
@@ -586,6 +556,7 @@ class LocalPath(Path):
             log.debug(f'Local WD event: {path} {isdir} {change} {mtime}')
             if change != 'D':
                 mtime = None
+                print(os.path.relpath(path), path)
             self.tasks.put(File(os.path.relpath(path), mtime, self, change))  # TODO: This works but is not abs, why?
 
     def start_watchdog(self):

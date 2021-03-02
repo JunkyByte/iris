@@ -14,11 +14,14 @@ class WatchdogManager:
         self.log = log
         self.prev_ev = {'path': None, 'time': None}
 
-        #if self.log:
-        #    print('Starting watchdog on %s' % path)
-
         patterns = list(pattern.split())
+        for i, p in enumerate(patterns):  # Setup directories matching
+            if p.endswith('/'):
+                patterns[i] = '*' + p + '*'
         ignore_patterns = ['*.md5', '*.swp', '*.swx', '*.swpx'] + list(ignore_pattern.split())
+        for i, p in enumerate(ignore_patterns):
+            if p.endswith('/'):
+                ignore_patterns[i] = '*' + p + '*'
         ignore_directories = True
         case_sensitive = True
         handler = PatternMatchingEventHandler(patterns, ignore_patterns, ignore_directories, case_sensitive)
@@ -33,6 +36,7 @@ class WatchdogManager:
         self.observer.start()
 
     def log_change(self, path, isdir=False, change='M'):
+        print(path)
         try:
             if change != 'D':
                 t = os.stat(path).st_mtime
