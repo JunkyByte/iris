@@ -17,7 +17,7 @@ from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
 
 
-def enhance_ignore(pattern):
+def enhance_pattern(pattern):
     if pattern.endswith('/'):  # Automatically append an * if a directory is specified
         pattern = pattern + '*'
     return pattern
@@ -72,10 +72,10 @@ class Path:
         self.tasks = None
 
     def has_pattern(self, p, path):
-        return any([fnmatchcase(p.split(path)[1], pat) for pat in self.pattern.split()])
+        return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat)) for pat in self.pattern.split()])
 
     def has_ignore(self, p, path):
-        return any([fnmatchcase(p.split(path)[1], pat) for pat in self.ignore_pattern.split()])
+        return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat)) for pat in self.ignore_pattern.split()])
 
     def __repr__(self):
         return 'Host %s:%s' % (self.host, self.path)
@@ -250,9 +250,11 @@ class RemotePath(Path):
         return self._sftp
 
     def connection_lost(self, exc):
-        print('CONNECTION LOST')
+        print('*** CONNECTION LOST ***')
+        self._conn = None  # TODO: Here the connection should be closed
+        self._sftp = None
         run(self._check_connection())
-        print('CONNECTION RESTORED')
+        print('*** CONNECTION RESTORED ***')
 
     async def ssh_connect(self):
         auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
@@ -369,7 +371,13 @@ class RemotePath(Path):
             if f.filename in ('.', '..'):  # Ignore reference to self and parent
                 continue
 
+            if stat.S_ISLNK(f.attrs.permissions):  # Ignore symbolic links TODO
+                continue
+
             remotepath = os.path.join(path, f.filename)
+            if not self.has_pattern(remotepath, self.path) or self.has_ignore(remotepath, self.path):
+                continue
+
             if stat.S_ISDIR(f.attrs.permissions):
                 tasks.add(asyncio.create_task(self._recursive_scan(remotepath, files)))
             else:
@@ -444,8 +452,9 @@ class RemotePath(Path):
         async def upload_watchdog():
             await self.sftp.put(src_path, '/tmp/iris_wd.py')
 
+        log.debug('Running remote wd')
         run(upload_watchdog())
-        self.wd = RemoteWDThread(self.path, self.host, self.key, self.tasks, self, port=self.port)
+        self.wd = RemoteWDThread(self.path, self.host, self.key, self.tasks, self, self.port, self.pattern, self.ignore_pattern)
         self.wd.start()
 
         while self.wd.process is None:
@@ -520,6 +529,13 @@ class LocalPath(Path):
         for root, _, fs in os.walk(self.path):
             for name in fs:
                 path = os.path.join(root, name)
+
+                if os.path.islink(path):  # Ignore sys links
+                    continue
+
+                if not self.has_pattern(path, self.path) or self.has_ignore(path, self.path):
+                    continue
+
                 time = pathlib.Path(path).stat().st_mtime
                 files.append(File(path, time, self))
         return files
@@ -556,7 +572,6 @@ class LocalPath(Path):
             log.debug(f'Local WD event: {path} {isdir} {change} {mtime}')
             if change != 'D':
                 mtime = None
-                print(os.path.relpath(path), path)
             self.tasks.put(File(os.path.relpath(path), mtime, self, change))  # TODO: This works but is not abs, why?
 
     def start_watchdog(self):

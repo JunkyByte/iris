@@ -45,10 +45,10 @@ to:  # local or the host for sftp
 to_port:  # Port to use for ssh on `to`
 mirror:  # Whether to mirror sync (from <- to) (optional, default: True)
 
-# optional, default: '*', e.g. '*.yaml *.txt'
+# optional, default: '*', e.g. '*.yaml *.txt' to select a directory just use the relative path e.g. './git/'
 pattern:  # Patterns for file name matching separated by a space
 
-# optional, default: '//', e.g. '*.md5'
+# optional, default: '//', e.g. '*.md5' to select a directory just use the relative path e.g. './git/'
 ignore_pattern:  # Patterns for ignore by file name separated by a space
 
 from_path:  # The `from` absolute path

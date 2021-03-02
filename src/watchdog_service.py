@@ -36,7 +36,6 @@ class WatchdogManager:
         self.observer.start()
 
     def log_change(self, path, isdir=False, change='M'):
-        print(path)
         try:
             if change != 'D':
                 t = os.stat(path).st_mtime
@@ -62,18 +61,12 @@ class WatchdogManager:
         self.prev_ev['time'] = datetime.fromtimestamp(time.time())
 
     def on_created(self, event):
-        #if self.log:
-        #    print('Created a file')
         self.log_change(event.src_path, event.is_directory, 'C')
 
     def on_deleted(self, event):
-        #if self.log:
-        #    print('Deleted a file')
         self.log_change(event.src_path, event.is_directory, 'D')
 
     def on_modified(self, event):
-        #if self.log:
-        #    print('Modified a file')
         self.log_change(event.src_path, event.is_directory, 'M')
 
     def wait(self):

@@ -1,6 +1,6 @@
 from: local
 to: 104.196.18.97
-mirror: False
+mirror: True
 
 pattern: '*'
 ignore_pattern: '.git/'
