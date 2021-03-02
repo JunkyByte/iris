@@ -144,6 +144,8 @@ def main():
             # For each file do a merge on both sides.
             status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (from_host, from_path.path, to_host, to_path.path))
 
+        t0 = time.time()
+
         # Process tasks
         tasks = [from_path.write(f, to_path, console.callback_write(from_host, f.path, to_host)) for f in from_files]
 
@@ -158,7 +160,7 @@ def main():
             if tasks:
                 run(tasks)
 
-        console.print('[bold blue]Initial sync completed')
+        console.print('[bold blue]Initial sync completed in %.2f seconds' % (time.time() - t0))
 
     with console.status('[bold blue] Launching watchdog programs') as status:
         from_path.start_watchdog()

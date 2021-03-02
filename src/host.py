@@ -486,7 +486,7 @@ class RemoteWDThread(Thread):
 
     def run(self):
         loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        #asyncio.set_event_loop(loop)
 
         async def async_wd():
             async with asyncssh.connect(self.host, client_keys=self.key, port=self.port,
