@@ -24,7 +24,7 @@ pip install .
 ### Remote installation
 On remote host you do not need all dependencies, if you have a working python3 install the watchdog package and you should be set
 ```
-pip install watchdog pathlib
+pip install watchdog
 ```
 
 
@@ -73,5 +73,3 @@ During a bidirectional sync if you delete a file from the `to_path` it will be d
 Also files will be merged based on most recent modification, be careful and run in `dry` mode first.
 We do not take any responsability for files lost. Iris is a work in progress, be sure to backup your computer before using it,
 do not run iris as sudo.
-
-Also syslinks have not been tested.
