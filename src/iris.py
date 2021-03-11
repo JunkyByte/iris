@@ -188,6 +188,7 @@ def main():
 
             time.sleep(1e-2)
 
+# TODO: Inspect remove multifile missing some? rm dir example
 
 if __name__ == '__main__':
     main()

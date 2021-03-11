@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from watchdog.observers import Observer
 from watchdog.events import PatternMatchingEventHandler
 
+IGNORED_PATTERNS = ('*.swpx', '*.md5', '.swp', '.swx', '.DS_Store', '~')
+
 
 class WatchdogManager:
     def __init__(self, path, queue_out=None, log=False, pattern='*', ignore_pattern='//'):
@@ -18,7 +20,7 @@ class WatchdogManager:
         for i, p in enumerate(patterns):  # Setup directories matching
             if p.endswith('/'):
                 patterns[i] = '*' + p + '*'
-        ignore_patterns = ['*.md5', '*.swp', '*.swx', '*.swpx'] + list(ignore_pattern.split())
+        ignore_patterns = list(IGNORED_PATTERNS) + list(ignore_pattern.split())
         for i, p in enumerate(ignore_patterns):
             if p.endswith('/'):
                 ignore_patterns[i] = '*' + p + '*'
@@ -29,6 +31,7 @@ class WatchdogManager:
         handler.on_created = self.on_created
         handler.on_deleted = self.on_deleted
         handler.on_modified = self.on_modified
+        handler.on_moved = self.on_moved
 
         go_recursively = True
         self.observer = Observer()
@@ -68,6 +71,10 @@ class WatchdogManager:
 
     def on_modified(self, event):
         self.log_change(event.src_path, event.is_directory, 'M')
+
+    def on_moved(self, event):
+        self.log_change(event.src_path, event.is_directory, 'D')
+        self.log_change(event.dest_path, event.is_directory, 'C')
 
     def wait(self):
         self.observer.join()

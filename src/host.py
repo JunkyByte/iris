@@ -16,6 +16,8 @@ from threading import Thread
 from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
 
+IGNORED_PATTERNS = ('*.swpx', '*.md5', '.swp', '.swx', '.DS_Store', '~')
+
 
 def enhance_pattern(pattern):
     if pattern.endswith('/'):  # Automatically append an * if a directory is specified
@@ -96,7 +98,7 @@ class Path:
         target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
 
         # Ignore some files (this is a good place as is implementation independent)
-        if target_path.endswith(('.swp', '.swx', '.DS_Store')) or self.has_ignore(target_path, target_holder.path):
+        if target_path.endswith(IGNORED_PATTERNS) or self.has_ignore(target_path, target_holder.path):
             log.debug('Ignored file %s' % origin)
             return self._empty()
 
@@ -216,7 +218,11 @@ class Path:
 class RemotePath(Path):
     def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa', port=22):
         super().__init__(path, dry, pattern, ignore_pattern)
+        user = os.getlogin()
+        if '@' in host:
+            user, _, host = host.partition('@')
         self.host = host
+        self.user = user
         try:
             self.key = RemotePath.load_agent_keys()
         except ValueError:
@@ -232,6 +238,7 @@ class RemotePath(Path):
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
         self.port = port
         self.req = set()
+        self_retry = 0
 
     @property
     def conn(self):
@@ -250,14 +257,18 @@ class RemotePath(Path):
         return self._sftp
 
     def connection_lost(self, exc):
+        self._retry += 1
+        if self._retry > 3:
+            raise asyncssh.ConnectionLost
         print('*** CONNECTION LOST ***')
-        self._conn = None  # TODO: Here the connection should be closed
+        self._conn = None
         self._sftp = None
-        run(self._check_connection())
+        asyncio.new_event_loop().run_until_complete(self._check_connection())
         print('*** CONNECTION RESTORED ***')
 
     async def ssh_connect(self):
         auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
+        auth['username'] = self.user
         self._conn = await asyncssh.connect(self.host, port=self.port, **auth)
         self._conn.connection_lost = self.connection_lost
         return self._conn
@@ -345,10 +356,9 @@ class RemotePath(Path):
         if self._conn is None:
             await self.conn  # This will initialize the connections
             await self.sftp
+        self._retry = 0
 
-        # Check connection to remote host
-        # TODO: We could add here a retry (not reconnect) just to be sure that a small internet interruption does not crashes everything
-        try:
+        try:  # Check connection to remote host
             # Check path is valid
             if await self.sftp.isdir(self.path):
                 return True
@@ -444,7 +454,7 @@ class RemotePath(Path):
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
-        self.tasks = Queue()
+        self.tasks = Queue(maxsize=-1)
 
         import src.watchdog_service
         src_path = os.path.abspath(src.watchdog_service.__file__)
@@ -454,7 +464,8 @@ class RemotePath(Path):
 
         log.debug('Running remote wd')
         run(upload_watchdog())
-        self.wd = RemoteWDThread(self.path, self.host, self.key, self.tasks, self, self.port, self.pattern, self.ignore_pattern)
+        self.wd = RemoteWDThread(self.path, self.user, self.host, self.password, self.key, self.tasks, self, self.port,
+                                 self.pattern, self.ignore_pattern)
         self.wd.start()
 
         while self.wd.process is None:
@@ -472,10 +483,12 @@ class RemotePath(Path):
 
 
 class RemoteWDThread(Thread):
-    def __init__(self, path, host, key, tasks, holder, port=22, pattern='*', ignore_pattern='//'):
+    def __init__(self, path, user, host, password, key, tasks, holder, port=22, pattern='*', ignore_pattern='//'):
         Thread.__init__(self)
         self.path = path
+        self.user = user
         self.host = host
+        self.password = password
         self.key = key
         self.port = port
         self.holder = holder
@@ -486,11 +499,11 @@ class RemoteWDThread(Thread):
 
     def run(self):
         loop = asyncio.new_event_loop()
-        #asyncio.set_event_loop(loop)
 
         async def async_wd():
-            async with asyncssh.connect(self.host, client_keys=self.key, port=self.port,
-                                        keepalive_interval=60, keepalive_count_max=10) as conn:
+            auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
+            auth['username'] = self.user
+            async with asyncssh.connect(self.host, port=self.port, keepalive_interval=60, keepalive_count_max=9, **auth) as conn:
                 async with conn.create_process('python -u /tmp/iris_wd.py',
                                                input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
                                                stderr=asyncssh.STDOUT) as process:
@@ -576,8 +589,8 @@ class LocalPath(Path):
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
-        self.tasks = Queue()
+        self.tasks = Queue(maxsize=-1)
 
-        self.wd = Thread(target=LocalPath._wd, args=(os.path.abspath(self.path), self, Queue()))
+        self.wd = Thread(target=LocalPath._wd, args=(os.path.abspath(self.path), self, Queue(maxsize=-1)))
         self.wd.daemon = True
         self.wd.start()
