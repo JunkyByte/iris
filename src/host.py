@@ -223,6 +223,7 @@ class RemotePath(Path):
             user, _, host = host.partition('@')
         self.host = host
         self.user = user
+        self.password = None
         try:
             self.key = RemotePath.load_agent_keys()
         except ValueError:
@@ -238,7 +239,6 @@ class RemotePath(Path):
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
         self.port = port
         self.req = set()
-        self_retry = 0
 
     @property
     def conn(self):
@@ -256,21 +256,14 @@ class RemotePath(Path):
         self._sftp = await self.conn.start_sftp_client(env={'block_size': 32768})
         return self._sftp
 
-    def connection_lost(self, exc):
-        self._retry += 1
-        if self._retry > 3:
-            raise asyncssh.ConnectionLost
-        print('*** CONNECTION LOST ***')
-        self._conn = None
-        self._sftp = None
-        asyncio.new_event_loop().run_until_complete(self._check_connection())
-        print('*** CONNECTION RESTORED ***')
+    # def connection_lost(self, exc):
+    #     print('*** CONNECTION LOST ***')
 
     async def ssh_connect(self):
         auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
         auth['username'] = self.user
         self._conn = await asyncssh.connect(self.host, port=self.port, **auth)
-        self._conn.connection_lost = self.connection_lost
+        # self._conn.connection_lost = self.connection_lost
         return self._conn
 
     def load_agent_keys(agent_path=None):
@@ -356,7 +349,6 @@ class RemotePath(Path):
         if self._conn is None:
             await self.conn  # This will initialize the connections
             await self.sftp
-        self._retry = 0
 
         try:  # Check connection to remote host
             # Check path is valid
@@ -381,7 +373,7 @@ class RemotePath(Path):
             if f.filename in ('.', '..'):  # Ignore reference to self and parent
                 continue
 
-            if stat.S_ISLNK(f.attrs.permissions):  # Ignore symbolic links TODO
+            if stat.S_ISLNK(f.attrs.permissions):  # Ignore symbolic links
                 continue
 
             remotepath = os.path.join(path, f.filename)
