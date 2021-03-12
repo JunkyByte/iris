@@ -39,7 +39,7 @@ no file writing will be actually done (please use this to test your settings wit
 ### Config files
 Config files are in `yaml` format, the following parameters can be specified, the default value of optional is specified below.
 ```yaml
-from:  # local or the host for sftp (e.g. 104.30.12.61)
+from:  # local or the host for sftp (e.g. root@104.30.12.61)
 from_port:  # Port to use for ssh on `from`
 to:  # local or the host for sftp
 to_port:  # Port to use for ssh on `to`
@@ -54,6 +54,7 @@ ignore_pattern:  # Patterns for ignore by file name separated by a space
 from_path:  # The `from` absolute path
 to_path:  # The `to` absolute path
 ```
+Note that if no user is specified on ssh host the local username will be used.
 
 Right now iris requires a config file to be passed.
 For remote connections iris will try to load from your `ssh-agent` first, if it fails right now it uses `~/.ssh/id_rsa` as a key.
@@ -65,6 +66,8 @@ Iris uses `asyncssh` (which I recommend) for sftp file monitoring / writing, `ai
 
 ## Contribute / Issues
 Please create an issue if you have any request / problem or want to contribute.
+
+Password authentication sftp has not been tested and may not work.
 
 Hope you find iris useful.
 
