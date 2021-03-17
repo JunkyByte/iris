@@ -496,23 +496,23 @@ class RemoteWDThread(Thread):
             auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
             auth['username'] = self.user
             async with asyncssh.connect(self.host, port=self.port, keepalive_interval=60, keepalive_count_max=9, **auth) as conn:
-                async with conn.create_process('python -u /tmp/iris_wd.py',
+                async with conn.create_process('python3 -u /tmp/iris_wd.py',
                                                input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
                                                stderr=asyncssh.STDOUT) as process:
                     self.process = process
                     while True:
                         try:
-                            path, isdir, change, mtime = (await process.stdout.readline()).split('%')
+                            line = (await process.stdout.readline()).split('%')
+                            path, isdir, change, mtime = line
                             log.debug(f'Remote WD event: {path} {isdir} {change} {mtime}')
                             if change != 'D':
                                 mtime = None
                             self.tasks.put(File(path, mtime, self.holder, change))
                         except Exception as e:
-                            line = True
                             while line:
-                                line = await process.stdout.readline()
                                 log.debug(line)
                                 log.debug(e)
+                                line = await process.stdout.readline()
                             break
         loop.run_until_complete(async_wd())
         loop.close()
