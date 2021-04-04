@@ -8,6 +8,7 @@ Iris runs locally but requires a working python installation on each machine whe
 
 Iris features are:
 - Local and Remote ssh (sftp) directories support
+- JumpProxy support for ssh
 - Changes are sync in realtime using python watchdogs both locally and remotely
 - Modification time is preserved during copy, merge by newer strategy is used
 - Pattern / Pattern ignore settings
@@ -39,10 +40,10 @@ no file writing will be actually done (please use this to test your settings wit
 ### Config files
 Config files are in `yaml` format, the following parameters can be specified, the default value of optional is specified below.
 ```yaml
-from:  # local or the host for sftp (e.g. root@104.30.12.61)
-from_port:  # Port to use for ssh on `from`
+from:  # local or the host for sftp (if not port specified 22 will be used) (e.g. root@104.30.12.61:42)
+from_jump: # host to use for jumping the ssh connection (optional) (e.g. user@104.32.5.42:42)
 to:  # local or the host for sftp
-to_port:  # Port to use for ssh on `to`
+to_jump: # host to use for jumping the ssh connection (optional)
 mirror:  # Whether to mirror sync (from <- to) (optional, default: True)
 
 # optional, default: '*', e.g. '*.yaml *.txt' to select a directory just use the relative path e.g. './git/'

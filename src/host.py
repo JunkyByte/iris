@@ -56,7 +56,11 @@ class File:
     def get_content(self):
         return self.holder.get_content(self.path)
 
-    def __repr__(self):
+    @property
+    def short_path(self):
+        return self.path.split(self.holder.path)[-1]
+
+    def __repr__(self, short=True):
         try:
             return 'Path: %s - %s - %s' % (self.path, self.time.ctime(), self.time.timestamp())
         except AttributeError:
@@ -216,13 +220,32 @@ class Path:
 
 
 class RemotePath(Path):
-    def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa', port=22):
+    def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa', jump_host=None):
         super().__init__(path, dry, pattern, ignore_pattern)
+        # Setup configs for connection
         user = os.getlogin()
+        self.port = 22  # Default port
         if '@' in host:
             user, _, host = host.partition('@')
+        if ':' in host:
+            host, _, port = host.partition(':')
+            self.port = int(port)
         self.host = host
         self.user = user
+
+        # Jumping connection
+        self.jump = jump_host is not None
+        jump_user = os.getlogin()
+        self.jump_port = 22
+        if jump_host is not None:
+            if '@' in jump_host:
+                jump_user, _, jump_host = jump_host.partition('@')
+            if ':' in jump_host:
+                jump_host, _, jump_port = jump_host.partition(':')
+                self.jump_port = int(port)
+        self.jump_host = jump_host
+        self.jump_user = jump_user
+
         self.password = None
         try:
             self.key = RemotePath.load_agent_keys()
@@ -237,7 +260,6 @@ class RemotePath(Path):
         self._sftp = None
         self._last_check = 0
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
-        self.port = port
         self.req = set()
 
     @property
@@ -260,9 +282,14 @@ class RemotePath(Path):
     #     print('*** CONNECTION LOST ***')
 
     async def ssh_connect(self):
-        auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
-        auth['username'] = self.user
-        self._conn = await asyncssh.connect(self.host, port=self.port, **auth)
+        options = asyncssh.SSHClientConnectionOptions(client_keys=self.key if self.key is not None else None,
+                                                      password=self.password if self.key is None else None
+                                                      )
+        if self.jump:
+            self._tunnel = await asyncssh.connect(self.jump_host, port=self.jump_port, username=self.jump_user, options=options)
+            self._conn = await self._tunnel.connect_ssh(self.host, port=self.port, username=self.user, options=options)
+        else:
+            self._conn = await asyncssh.connect(self.host, port=self.port, username=self.user, options=options)
         # self._conn.connection_lost = self.connection_lost
         return self._conn
 
@@ -456,8 +483,7 @@ class RemotePath(Path):
 
         log.debug('Running remote wd')
         run(upload_watchdog())
-        self.wd = RemoteWDThread(self.path, self.user, self.host, self.password, self.key, self.tasks, self, self.port,
-                                 self.pattern, self.ignore_pattern)
+        self.wd = RemoteWDThread(self)
         self.wd.start()
 
         while self.wd.process is None:
@@ -475,31 +501,46 @@ class RemotePath(Path):
 
 
 class RemoteWDThread(Thread):
-    def __init__(self, path, user, host, password, key, tasks, holder, port=22, pattern='*', ignore_pattern='//'):
+    def __init__(self, holder):
         Thread.__init__(self)
-        self.path = path
-        self.user = user
-        self.host = host
-        self.password = password
-        self.key = key
-        self.port = port
+        # Setup remote connection
+        self.path = holder.path
+        self.user = holder.user
+        self.host = holder.host
+        self.port = holder.port
+        # Setup jump connection
+        self.jump = holder.jump
+        self.jump_user = holder.jump_user
+        self.jump_host = holder.jump_host
+        self.jump_port = holder.jump_port
+        # Authentication
+        self.key = holder.key
+        self.password = holder.password
+        # WD setup
+        self.tasks = holder.tasks
         self.holder = holder
+        self.pattern = holder.pattern
+        self.ignore_pattern = holder.ignore_pattern
         self.process = None
-        self.tasks = tasks
-        self.pattern = pattern
-        self.ignore_pattern = ignore_pattern
 
     def run(self):
         loop = asyncio.new_event_loop()
 
         async def async_wd():
-            auth = {'client_keys': self.key} if self.key is not None else {'password': self.password}
-            auth['username'] = self.user
-            async with asyncssh.connect(self.host, port=self.port, keepalive_interval=60, keepalive_count_max=9, **auth) as conn:
+            options = asyncssh.SSHClientConnectionOptions(client_keys=self.key if self.key is not None else None,
+                                                          password=self.password if self.key is None else None
+                                                          )
+            provider = asyncssh.connect
+            if self.jump:
+                self._tunnel = await asyncssh.connect(self.jump_host, port=self.jump_port, username=self.jump_user, options=options)
+                provider = self._tunnel.connect_ssh
+
+            async with provider(self.host, port=self.port, keepalive_interval=60, keepalive_count_max=9, options=options) as conn:
                 async with conn.create_process('python3 -u /tmp/iris_wd.py',
                                                input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
                                                stderr=asyncssh.STDOUT) as process:
                     self.process = process
+                    line = False
                     while True:
                         try:
                             line = (await process.stdout.readline()).split('%')
@@ -509,6 +550,7 @@ class RemoteWDThread(Thread):
                                 mtime = None
                             self.tasks.put(File(path, mtime, self.holder, change))
                         except Exception as e:
+                            # TODO: Probably here the conn and tunnel should be closed?
                             while line:
                                 log.debug(line)
                                 log.debug(e)

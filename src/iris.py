@@ -83,8 +83,8 @@ def main():
         with open(args.config, 'r') as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
 
-    KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern', 'from_port', 'to_port']
-    DEFAULTS = {'mirror': True, 'pattern': '*', 'ignore_pattern': '//', 'from_port': 22, 'to_port': 22}
+    KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern', 'from_jump', 'to_jump']
+    DEFAULTS = {'mirror': True, 'pattern': '*', 'ignore_pattern': '//', 'from_jump': None, 'to_jump': None}
 
     if all([k in config.keys() or k in DEFAULTS.keys() for k in KEYS]):
         config = {**DEFAULTS, **config}
@@ -101,8 +101,8 @@ def main():
     pat = config['pattern']
     npat = config['ignore_pattern']
     mirror = config['mirror']
-    from_port = config['from_port']
-    to_port = config['to_port']
+    from_jump = config['from_jump']
+    to_jump = config['to_jump']
 
     from_host = 'local' if from_local else config['from']
     to_host = 'local' if to_local else config['to']
@@ -111,12 +111,12 @@ def main():
     if from_local:
         from_path = LocalPath(from_path, args.dry, pat, npat)
     else:
-        from_path = RemotePath(from_path, from_host, args.dry, pat, npat, port=from_port)
+        from_path = RemotePath(from_path, from_host, args.dry, pat, npat, jump_host=from_jump)
 
     if to_local:
         to_path = LocalPath(to_path, args.dry, pat, npat)
     else:
-        to_path = RemotePath(to_path, to_host, args.dry, pat, npat, port=to_port)
+        to_path = RemotePath(to_path, to_host, args.dry, pat, npat, jump_host=to_jump)
 
     # Create signal after creating from_path and to_path for cleanup
     signal.signal(signal.SIGINT, cleanup)
@@ -147,7 +147,7 @@ def main():
         t0 = time.time()
 
         # Process tasks
-        tasks = [from_path.write(f, to_path, console.callback_write(from_host, f.path, to_host)) for f in from_files]
+        tasks = [from_path.write(f, to_path, console.callback_write(from_host, f.short_path, to_host)) for f in from_files]
 
         if tasks:
             run(tasks)
@@ -155,7 +155,7 @@ def main():
         status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (to_host, to_path.path, from_host, from_path.path))
 
         if mirror:
-            tasks = [to_path.write(f, from_path, console.callback_write(from_host, f.path, to_host, True)) for f in to_files]
+            tasks = [to_path.write(f, from_path, console.callback_write(from_host, f.short_path, to_host, True)) for f in to_files]
 
             if tasks:
                 run(tasks)
