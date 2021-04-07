@@ -14,6 +14,7 @@ logging.basicConfig()
 class PrettyConsole(Console):
     def __init__(self):
         super().__init__()
+        self.counter = 0
 
     def callback_write(self, from_host, path, to_host, rev=False):
         return partial(self.log_write, from_host=from_host, path=path, to_host=to_host, rev=rev)
@@ -22,11 +23,11 @@ class PrettyConsole(Console):
         # Choose change symbol
         if merged:
             if change == 'M':
-                change = '---->'
+                change = '--->'
             elif change == 'D':
-                change = '--D->'
+                change = '-D->'
             else:
-                change = '---->'
+                change = '--->'
         else:
             change = '|'
 
@@ -38,7 +39,8 @@ class PrettyConsole(Console):
             msg = '[green]%s[/green] [bold blue]%5s [red]%s:%s'
 
         subs = (from_host, change, to_host, path) if rev else (from_host, path, change, to_host)
-        self.print(msg % subs)
+        self.print(f'[white]{self.counter} [/white]' + msg % subs)
+        self.counter += 1
 
 
 def main():
@@ -177,10 +179,10 @@ def main():
 
             if from_req:
                 for r in from_req:
-                    req.append(from_path.write(r, to_path, console.callback_write(from_host, r.path, to_host)))
+                    req.append(from_path.write(r, to_path, console.callback_write(from_host, r.short_path, to_host)))
             if to_req:
                 for r in to_req:
-                    req.append(to_path.write(r, from_path, console.callback_write(from_host, r.path, to_host, True)))
+                    req.append(to_path.write(r, from_path, console.callback_write(from_host, r.short_path, to_host, True)))
 
             if req:
                 run(req)

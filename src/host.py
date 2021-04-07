@@ -58,7 +58,7 @@ class File:
 
     @property
     def short_path(self):
-        return self.path.split(self.holder.path)[-1]
+        return self.path.split(self.holder.path)[-1].split('/', 1)[-1]
 
     def __repr__(self, short=True):
         try:
