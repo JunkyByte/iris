@@ -35,7 +35,13 @@ Inside your terminal you can start iris by typing
 iris --config config_file.yaml
 ```
 Other options are `--debug` that does not require any explanation and `--dry` which allows you to run iris in test mode,
-no file writing will be actually done (please use this to test your settings without altering your files)
+no file writing will be actually done (please use this to test your settings without altering your files).
+
+To create a configuration file with ease you can use
+```
+iris-init  # The default name will be iris_conf.yaml
+iris-init --config my_new_config.yaml  # You can specify the file path
+```
 
 ### Config files
 Config files are in `yaml` format, the following parameters can be specified, the default value of optional is specified below.
