@@ -20,6 +20,6 @@ setuptools.setup(
     ],
     python_requires='>=3',
     entry_points={
-        'console_scripts': ['iris = src.iris:main']
+        'console_scripts': ['iris = src.iris:main', 'iris-init = src.iris:init_config']
     }
 )

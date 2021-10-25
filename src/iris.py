@@ -10,6 +10,10 @@ from rich.console import Console
 from src.host import RemotePath, LocalPath, run
 logging.basicConfig()
 
+parser = argparse.ArgumentParser(description='iris is a command line tool to sync folders between local and remote')
+KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern', 'from_jump', 'to_jump']
+DEFAULTS = {'mirror': True, 'pattern': '*', 'ignore_pattern': '//', 'from_jump': None, 'to_jump': None}
+
 
 class PrettyConsole(Console):
     def __init__(self):
@@ -43,6 +47,24 @@ class PrettyConsole(Console):
         self.counter += 1
 
 
+def init_config():
+    # Setup rich
+    console = PrettyConsole()
+    parser.add_argument('--config', type=str, help='yaml config file path', default='iris_conf.yaml')
+    args = parser.parse_args()
+
+    if os.path.isfile(args.config):
+        console.print('[bold red] The configuration file [bold green]%s[/bold green] already exists, exiting.' % args.config)
+        sys.exit(0)
+
+    config = {k: '' for k in KEYS}
+    config = {**config, **DEFAULTS}
+    with open(args.config, 'w') as f:
+        yaml.dump(config, f)
+    console.print('[bold green]The configuration file %s has been created' % args.config)
+    sys.exit(0)
+
+
 def main():
     # Setup rich
     console = PrettyConsole()
@@ -63,7 +85,6 @@ def main():
             console.print('[green]%s[/green] [red] - Config file not found[/red]' % string)
             sys.exit()
 
-    parser = argparse.ArgumentParser(description='iris is a command line tool to sync folders between local and remote')
     parser.add_argument('--config', type=file_path, help='yaml config file path')
     parser.add_argument('--debug', action='store_true', help='Debug infos')
     parser.add_argument('--dry', action='store_true', help='Fake run with no file writing')
@@ -84,9 +105,6 @@ def main():
     if os.path.isfile(args.config):
         with open(args.config, 'r') as f:
             config = yaml.load(f, Loader=yaml.FullLoader)
-
-    KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern', 'from_jump', 'to_jump']
-    DEFAULTS = {'mirror': True, 'pattern': '*', 'ignore_pattern': '//', 'from_jump': None, 'to_jump': None}
 
     if all([k in config.keys() or k in DEFAULTS.keys() for k in KEYS]):
         config = {**DEFAULTS, **config}
@@ -190,7 +208,7 @@ def main():
 
             time.sleep(1e-2)
 
-# TODO: Inspect remove multifile missing some? rm dir example
 
+# TODO: Inspect remove multifile missing some? rm dir example
 if __name__ == '__main__':
     main()
