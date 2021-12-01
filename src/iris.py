@@ -107,7 +107,7 @@ def main():
         if os.path.isfile(string):
             return string
         else:
-            console.print('[green]%s[/green] [red] - Config file not found[/red]' % string)
+            console.print(f'[green]{string}[/green] [red] - Config file not found[/red]')
             sys.exit()
 
     parser.add_argument('--config', type=file_path, help='yaml config file path')
@@ -124,7 +124,7 @@ def main():
     if args.debug:
         log.setLevel(logging.DEBUG)
 
-    log.debug('DRY RUN: %s' % args.dry)
+    log.debug(f'DRY RUN: {args.dry}')
 
     with open(args.config, 'r') as f:
         config_yaml = yaml.load(f, Loader=yaml.FullLoader)

@@ -62,9 +62,9 @@ class File:
 
     def __repr__(self, short=True):
         try:
-            return 'Path: %s - %s - %s' % (self.path, self.time.ctime(), self.time.timestamp())
+            return f'Path: {self.path} - {self.time.ctime()} - {self.time.timestamp()}'
         except AttributeError:
-            return 'Path: %s - %s - %s' % (self.path, None, None)
+            return f'Path: {self.path}'
 
 
 class Path:
@@ -84,7 +84,7 @@ class Path:
         return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat)) for pat in self.ignore_pattern.split()])
 
     def __repr__(self):
-        return 'Host %s:%s' % (self.host, self.path)
+        return f'Host {self.host}:{self.path}'
 
     def relative_path(self, path):
         path = os.path.abspath(path)
@@ -103,7 +103,7 @@ class Path:
 
         # Ignore some files (this is a good place as is implementation independent)
         if target_path.endswith(IGNORED_PATTERNS) or self.has_ignore(target_path, target_holder.path):
-            log.debug('Ignored file %s' % origin)
+            log.debug(f'Ignored file {origin}')
             return self._empty()
 
         if not self.has_pattern(target_path, target_holder.path):
@@ -127,7 +127,7 @@ class Path:
 
         merged = False
         if origin.time > target.time:
-            log.debug('Calling delete on %s' % target_path)
+            log.debug(f'Calling delete on {target_path}')
             if not self.dry:
                 await target_holder._deletefile(target_path)
             merged = True
@@ -162,7 +162,7 @@ class Path:
             if origin_content is None:
                 return False
 
-            log.debug('Calling write on %s' % target_path)
+            log.debug(f'Calling write on {target_path}')
             if not self.dry:
                 await target_holder._writefile(origin_content, target_path, mtime=origin.time)
             merged = True
@@ -457,7 +457,7 @@ class RemotePath(Path):
 
                 if not stat.S_ISDIR(mode):
                     path = curpath.decode('utf-8', errors='replace')
-                    raise asyncssh.SFTPFailure('%s is not a directory' % path) from None
+                    raise asyncssh.SFTPFailure(f'{path} is not a directory') from None
 
         data = BytesIO(origin).read()
         async with self.open_sem:
