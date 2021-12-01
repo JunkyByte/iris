@@ -5,14 +5,41 @@ import yaml
 import os
 import signal
 import logging
+from dataclasses import dataclass, fields, MISSING, asdict
+from typing import Optional
 from functools import partial
 from rich.console import Console
 from src.host import RemotePath, LocalPath, run
 logging.basicConfig()
 
 parser = argparse.ArgumentParser(description='iris is a command line tool to sync folders between local and remote')
-KEYS = ['from', 'to', 'mirror', 'from_path', 'to_path', 'pattern', 'ignore_pattern', 'from_jump', 'to_jump']
-DEFAULTS = {'mirror': True, 'pattern': '*', 'ignore_pattern': '//', 'from_jump': None, 'to_jump': None}
+
+
+@dataclass
+class IrisConfig:
+    origin: str
+    origin_path: str
+    dest: str
+    dest_path: str
+    mirror: bool = True
+    pattern: str = '*'
+    ignore_pattern: str = '//'
+    origin_jump: Optional[str] = None
+    dest_jump: Optional[str] = None
+    
+    def sided_configs(self, origin=True):
+        pat = 'origin' if origin else 'dest'
+        npat = 'origin' if not origin else 'dest'
+        config = {k: v for k, v in asdict(self).items() if npat not in k}
+        config['path'] = config[pat + '_path']
+        config.pop(pat + '_path')
+        config['host'] = config.pop(pat)
+        config['jump_host'] = config.pop(pat + '_jump')
+        return config
+
+    @staticmethod
+    def static_dict():
+        return {k.name: k.default if k.default is not MISSING else '' for k in fields(IrisConfig)}
 
 
 class PrettyConsole(Console):
@@ -54,14 +81,12 @@ def init_config():
     args = parser.parse_args()
 
     if os.path.isfile(args.config):
-        console.print('[bold red] The configuration file [bold green]%s[/bold green] already exists, exiting.' % args.config)
+        console.print(f'[bold red] The configuration file [bold green]{args.config}[/bold green] already exists, exiting.')
         sys.exit(0)
 
-    config = {k: '' for k in KEYS}
-    config = {**config, **DEFAULTS}
     with open(args.config, 'w') as f:
-        yaml.dump(config, f)
-    console.print('[bold green]The configuration file %s has been created' % args.config)
+        yaml.dump(IrisConfig.static_dict(), f, sort_keys=False)
+    console.print(f'[bold green]The configuration file {args.config} has been created')
     sys.exit(0)
 
 
@@ -101,42 +126,15 @@ def main():
 
     log.debug('DRY RUN: %s' % args.dry)
 
-    config = None
-    if os.path.isfile(args.config):
-        with open(args.config, 'r') as f:
-            config = yaml.load(f, Loader=yaml.FullLoader)
+    with open(args.config, 'r') as f:
+        config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+        config = IrisConfig(**config_yaml)
 
-    if all([k in config.keys() or k in DEFAULTS.keys() for k in KEYS]):
-        config = {**DEFAULTS, **config}
-    else:
-        console.print('[red]Parameters missing on yaml config file')
-        missing = [k for k in KEYS if k not in config.keys() and k not in DEFAULTS.keys()]
-        console.print('Missing parameters: \n[green]%s' % '\n'.join(missing))
+    from_class = LocalPath if config.origin == 'local' else RemotePath
+    to_class = LocalPath if config.dest == 'local' else RemotePath
 
-    mirror = config['mirror']
-    from_local = config['from'] == 'local'
-    to_local = config['to'] == 'local'
-    from_path = config['from_path']
-    to_path = config['to_path']
-    pat = config['pattern']
-    npat = config['ignore_pattern']
-    mirror = config['mirror']
-    from_jump = config['from_jump']
-    to_jump = config['to_jump']
-
-    from_host = 'local' if from_local else config['from']
-    to_host = 'local' if to_local else config['to']
-
-    # Create Path connections
-    if from_local:
-        from_path = LocalPath(from_path, args.dry, pat, npat)
-    else:
-        from_path = RemotePath(from_path, from_host, args.dry, pat, npat, jump_host=from_jump)
-
-    if to_local:
-        to_path = LocalPath(to_path, args.dry, pat, npat)
-    else:
-        to_path = RemotePath(to_path, to_host, args.dry, pat, npat, jump_host=to_jump)
+    from_path = from_class(**config.sided_configs(origin=True), dry=args.dry)
+    to_path = from_class(**config.sided_configs(origin=False), dry=args.dry)
 
     # Create signal after creating from_path and to_path for cleanup
     signal.signal(signal.SIGINT, cleanup)
@@ -144,48 +142,48 @@ def main():
     with console.status('[bold blue] Testing connection to paths') as status:
         # Test connection to Paths is working.
         if not from_path.check_connection():
-            console.print('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (from_host, from_path.path))
+            console.print(f'[red]Connection to [green]{from_path.host}:{from_path.path}[/green] failed[/red] path may not exist')
             sys.exit()
-        console.print('Connection to [green]%s:%s[/green] established' % (from_host, from_path.path))
+        console.print(f'Connection to [green]{from_path.host}:{from_path.path}[/green] established')
         if not to_path.check_connection():
-            console.print('[red]Connection to [green]%s:%s[/green] failed[/red] path may not exist' % (to_host, to_path.path))
+            console.print(f'[red]Connection to [green]{to_path.host}:{to_path.path}[/green] failed[/red] path may not exist')
             sys.exit()
-        console.print('Connection to [green]%s:%s[/green] established' % (to_host, to_path.path))
+        console.print(f'Connection to [green]{to_path.host}:{to_path.path}[/green] established')
 
         # Get all files from both sources
         status.update(status='[bold green]Getting all files from both paths')
         from_files = from_path.all_files()
-        console.print('[green]%s[/green] Files received from [green]%s' % (len(from_files), from_host))
+        console.print(f'[green]{len(from_files)}[/green] Files received from [green]{from_path.host}')
 
-        if mirror:
+        if config.mirror:
             to_files = to_path.all_files()
-            console.print('[green]%s[/green] Files received from [green]%s' % (len(to_files), to_host))
+            console.print(f'[green]{len(to_files)}[/green] Files received from [green]{to_path.host}')
 
             # For each file do a merge on both sides.
-            status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (from_host, from_path.path, to_host, to_path.path))
+            status.update(status=f'[bold blue] Merging files from {from_path.host}:{from_path.path} -> {to_path.host}:{to_path.path}')
 
         t0 = time.time()
 
         # Process tasks
-        tasks = [from_path.write(f, to_path, console.callback_write(from_host, f.short_path, to_host)) for f in from_files]
+        tasks = [from_path.write(f, to_path, console.callback_write(from_path.host, f.short_path, to_path.host)) for f in from_files]
 
         if tasks:
             run(tasks)
 
-        status.update(status='[bold blue] Merging files from %s:%s -> %s:%s' % (to_host, to_path.path, from_host, from_path.path))
+        status.update(status=f'[bold blue] Merging files from {to_path.host}:{to_path.path} -> {from_path.host}:{from_path.path}')
 
-        if mirror:
-            tasks = [to_path.write(f, from_path, console.callback_write(from_host, f.short_path, to_host, True)) for f in to_files]
+        if config.mirror:
+            tasks = [to_path.write(f, from_path, console.callback_write(from_path.host, f.short_path, to_path.host, True)) for f in to_files]
 
             if tasks:
                 run(tasks)
 
-        console.print('[bold blue]Initial sync completed in %.2f seconds' % (time.time() - t0))
+        console.print(f'[bold blue]Initial sync completed in {(time.time() - t0):.2f} seconds')
 
     with console.status('[bold blue] Launching watchdog programs') as status:
         from_path.start_watchdog()
 
-        if mirror:
+        if config.mirror:
             to_path.start_watchdog()
 
         status.update(status='[bold blue]Listening for changes on local and remote path')
@@ -197,10 +195,10 @@ def main():
 
             if from_req:
                 for r in from_req:
-                    req.append(from_path.write(r, to_path, console.callback_write(from_host, r.short_path, to_host)))
+                    req.append(from_path.write(r, to_path, console.callback_write(from_path.host, r.short_path, to_path.host)))
             if to_req:
                 for r in to_req:
-                    req.append(to_path.write(r, from_path, console.callback_write(from_host, r.short_path, to_host, True)))
+                    req.append(to_path.write(r, from_path, console.callback_write(from_path.host, r.short_path, to_path.host, True)))
 
             if req:
                 run(req)

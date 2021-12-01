@@ -68,7 +68,7 @@ class File:
 
 
 class Path:
-    def __init__(self, path, dry=False, pattern='*', ignore_pattern='//'):
+    def __init__(self, path, dry=False, pattern='*', ignore_pattern='//', *args, **kwargs):
         self.path = path
         self.host = None
         self.dry = dry
@@ -220,8 +220,8 @@ class Path:
 
 
 class RemotePath(Path):
-    def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa', jump_host=None):
-        super().__init__(path, dry, pattern, ignore_pattern)
+    def __init__(self, path, host, dry=False, pattern='*', ignore_pattern='//', key='~/.ssh/id_rsa', jump_host=None, *args, **kwargs):
+        super().__init__(path, dry, pattern, ignore_pattern, *args, **kwargs)
         # Setup configs for connection
         user = os.getlogin()
         self.port = 22  # Default port
@@ -461,7 +461,8 @@ class RemotePath(Path):
 
         data = BytesIO(origin).read()
         async with self.open_sem:
-            async with self.sftp.open(target, 'wb', asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())) as dst:
+            attrs = asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())
+            async with self.sftp.open(target, 'wb', attrs) as dst:
                 await dst.write(data)
                 await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
 
@@ -532,10 +533,14 @@ class RemoteWDThread(Thread):
                                                           )
             provider = asyncssh.connect
             if self.jump:
-                self._tunnel = await asyncssh.connect(self.jump_host, port=self.jump_port, username=self.jump_user, options=options)
+                self._tunnel = await asyncssh.connect(self.jump_host,
+                                                      port=self.jump_port, username=self.jump_user,
+                                                      options=options)
                 provider = self._tunnel.connect_ssh
 
-            async with provider(self.host, port=self.port, keepalive_interval=60, keepalive_count_max=9, options=options) as conn:
+            async with provider(self.host, port=self.port,
+                                keepalive_interval=60, keepalive_count_max=9,
+                                options=options) as conn:
                 async with conn.create_process('python3 -u /tmp/iris_wd.py',
                                                input='\n'.join([self.path, self.pattern, self.ignore_pattern]),
                                                stderr=asyncssh.STDOUT) as process:
@@ -561,8 +566,8 @@ class RemoteWDThread(Thread):
 
 
 class LocalPath(Path):
-    def __init__(self, path, dry=False, pattern='*', ignore_pattern='//'):
-        super().__init__(os.path.expanduser(path), dry, pattern, ignore_pattern)
+    def __init__(self, path, dry=False, pattern='*', ignore_pattern='//', *args, **kwargs):
+        super().__init__(os.path.expanduser(path), dry, pattern, ignore_pattern, *args, **kwargs)
         self.host = 'local'
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
 

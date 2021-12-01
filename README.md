@@ -40,11 +40,11 @@ no file writing will be actually done (please use this to test your settings wit
 ### Config files
 Config files are in `yaml` format, the following parameters can be specified, the default value of optional is specified below.
 ```yaml
-from:  # local or the host for sftp (if not port specified 22 will be used) (e.g. root@104.30.12.61:42)
-from_jump: # host to use for jumping the ssh connection (optional) (e.g. user@104.32.5.42:42)
-to:  # local or the host for sftp
-to_jump: # host to use for jumping the ssh connection (optional)
-mirror:  # Whether to mirror sync (from <- to) (optional, default: True)
+origin:  # local or the host for sftp (if not port specified 22 will be used) (e.g. root@104.30.12.61:42)
+origin_jump: # host to use for jumping the ssh connection (optional) (e.g. user@104.32.5.42:42)
+dest:  # local or the host for sftp
+dest_jump: # host to use for jumping the ssh connection (optional)
+mirror:  # Whether to mirror sync (origin <- dest) (optional, default: True)
 
 # optional, default: '*', e.g. '*.yaml *.txt' to select a directory just use the relative path e.g. './git/'
 pattern:  # Patterns for file name matching separated by a space
@@ -52,8 +52,8 @@ pattern:  # Patterns for file name matching separated by a space
 # optional, default: '//', e.g. '*.md5' to select a directory just use the relative path e.g. './git/'
 ignore_pattern:  # Patterns for ignore by file name separated by a space
 
-from_path:  # The `from` absolute path
-to_path:  # The `to` absolute path
+origin_path:  # The `origin` absolute path
+dest_path:  # The `dest` absolute path
 ```
 Note that if no user is specified on ssh host the local username will be used.
 
@@ -73,7 +73,7 @@ Password authentication sftp has not been tested and may not work.
 Hope you find iris useful.
 
 ## Warning:
-During a bidirectional sync if you delete a file from the `to_path` it will be deleted on your `local_path` and vice versa.
+During a bidirectional sync if you delete a file from the `dest_path` it will be deleted on your `origin_path` and vice versa.
 Also files will be merged based on most recent modification, be careful and run in `dry` mode first.
 We do not take any responsability for files lost. Iris is a work in progress, be sure to backup your computer before using it,
 do not run iris as sudo.
