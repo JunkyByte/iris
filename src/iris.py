@@ -134,7 +134,7 @@ def main():
     to_class = LocalPath if config.dest == 'local' else RemotePath
 
     from_path = from_class(**config.sided_configs(origin=True), dry=args.dry)
-    to_path = from_class(**config.sided_configs(origin=False), dry=args.dry)
+    to_path = to_class(**config.sided_configs(origin=False), dry=args.dry)
 
     # Create signal after creating from_path and to_path for cleanup
     signal.signal(signal.SIGINT, cleanup)
