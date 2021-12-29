@@ -374,7 +374,13 @@ class RemotePath(Path):
         self._last_check = time.time()
 
         if self._conn is None:
-            await self.conn  # This will initialize the connections
+            try:
+                await self.conn  # This will initialize the connections
+            except asyncssh.misc.PermissionDenied:
+                self.key = None
+                print('No valid key found, specify a password for auth:') # This is temporary
+                self.password = getpass.getpass()
+                await self.conn
             await self.sftp
 
         try:  # Check connection to remote host
