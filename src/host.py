@@ -69,7 +69,7 @@ class File:
 
 class Path:
     def __init__(self, path, dry=False, pattern='*', ignore_pattern='//', *args, **kwargs):
-        self.path = path
+        self.path = path + ('/' if not path.endswith('/') else '')
         self.host = None
         self.dry = dry
         self.pattern = pattern
