@@ -9,7 +9,7 @@ from dataclasses import dataclass, fields, MISSING, asdict
 from typing import Optional
 from functools import partial
 from rich.console import Console
-from src.host import RemotePath, LocalPath, run
+from iris.host import RemotePath, LocalPath, run
 logging.basicConfig()
 
 parser = argparse.ArgumentParser(description='iris is a command line tool to sync folders between local and remote')
