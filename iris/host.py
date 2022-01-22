@@ -482,8 +482,8 @@ class RemotePath(Path):
         assert self.tasks is None, 'Already initialized the watchdog'
         self.tasks = Queue(maxsize=-1)
 
-        import src.watchdog_service
-        src_path = os.path.abspath(src.watchdog_service.__file__)
+        import iris.watchdog_service
+        src_path = os.path.abspath(iris.watchdog_service.__file__)
 
         async def upload_watchdog():
             await self.sftp.put(src_path, '/tmp/iris_wd.py')
@@ -623,7 +623,7 @@ class LocalPath(Path):
             pass
 
     def _wd(path, self, q):
-        from src.watchdog_service import run_wd
+        from iris.watchdog_service import run_wd
         run_wd(path, queue=q, log=True, pattern=self.pattern, ignore_pattern=self.ignore_pattern)
         while True:
             path, isdir, change, mtime = q.get().split('%')
