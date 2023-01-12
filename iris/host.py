@@ -22,6 +22,7 @@ IGNORED_PATTERNS = ('*.swpx', '*.md5', '.swp', '.swx', '.DS_Store', '~')
 def enhance_pattern(pattern):
     if pattern.endswith('/'):  # Automatically append an * if a directory is specified
         pattern = pattern + '*'
+    pattern = pattern.replace('./', '', 1)  # if ./ at start remove it # TODO
     return pattern
 
 
