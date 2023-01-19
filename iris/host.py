@@ -59,7 +59,7 @@ class File:
 
     @property
     def short_path(self):
-        return self.path.split(self.holder.path)[-1].split('/', 1)[-1]
+        return self.path.split(self.holder.path)[-1]
 
     def __repr__(self, short=True):
         try:
@@ -142,7 +142,6 @@ class Path:
         """ Overwrite target with origin if newer """
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
-
         force = False
         target = None
         try:
@@ -454,17 +453,9 @@ class RemotePath(Path):
         path = self.sftp.encode(os.path.dirname(target))
         curpath = b'/' if posixpath.isabs(path) else (self.sftp._cwd or b'')
 
-        for part in path.split(b'/'):
-            curpath = posixpath.join(curpath, part)
-
-            try:
-                await self.sftp.mkdir(curpath, asyncssh.SFTPAttrs())
-            except asyncssh.SFTPFailure:
-                mode = await self.sftp._mode(curpath)
-
-                if not stat.S_ISDIR(mode):
-                    path = curpath.decode('utf-8', errors='replace')
-                    raise asyncssh.SFTPFailure(f'{path} is not a directory') from None
+        await self.sftp.makedirs(path, exist_ok=True)
+        if not await self.sftp.isdir(path):
+            raise asyncssh.SFTPFailure(f'{path} is not a directory') from None
 
         data = BytesIO(origin).read()
         async with self.open_sem:
