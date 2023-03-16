@@ -378,7 +378,7 @@ class RemotePath(Path):
                 await self.conn  # This will initialize the connections
             except asyncssh.misc.PermissionDenied:
                 self.key = None
-                print('No valid key found, specify a password for auth:') # This is temporary
+                print('No valid key found, specify a password for auth:')  # TODO: This is temporary
                 self.password = getpass.getpass()
                 await self.conn
             await self.sftp
@@ -451,7 +451,6 @@ class RemotePath(Path):
 
     async def _writefile(self, origin, target, mtime):
         path = self.sftp.encode(os.path.dirname(target))
-        curpath = b'/' if posixpath.isabs(path) else (self.sftp._cwd or b'')
 
         await self.sftp.makedirs(path, exist_ok=True)
         if not await self.sftp.isdir(path):
@@ -491,7 +490,11 @@ class RemotePath(Path):
     def cleanup(self):
         if self.wd is None:
             return
-        self.wd.process.terminate()
+
+        try:
+            self.wd.process.terminate()
+        except AttributeError:
+            pass
 
     def next_task(self):
         # Be sure the connection does not drop here
@@ -526,9 +529,8 @@ class RemoteWDThread(Thread):
         loop = asyncio.new_event_loop()
 
         async def async_wd():
-            options = asyncssh.SSHClientConnectionOptions(client_keys=self.key if self.key is not None else None,
-                                                          password=self.password if self.key is None else None
-                                                          )
+            options = asyncssh.SSHClientConnectionOptions(client_keys=self.key,
+                                                          password=self.password if self.key is None else None)
             provider = asyncssh.connect
             if self.jump:
                 self._tunnel = await asyncssh.connect(self.jump_host,
@@ -553,10 +555,10 @@ class RemoteWDThread(Thread):
                                 mtime = None
                             self.tasks.put(File(path, mtime, self.holder, change))
                         except Exception as e:
-                            # TODO: Probably here the conn and tunnel should be closed?
+                            log.debug(e)
                             while line:
-                                log.debug(line)
-                                log.debug(e)
+                                if line != ['']:
+                                    log.info(line)  # Output info about exception
                                 line = await process.stdout.readline()
                             break
         loop.run_until_complete(async_wd())

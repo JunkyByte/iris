@@ -142,11 +142,15 @@ def main():
     with console.status('[bold blue] Testing connection to paths') as status:
         # Test connection to Paths is working.
         if not from_path.check_connection():
-            console.print(f'[red]Connection to [green]{from_path.host}:{from_path.path}[/green] failed[/red] path may not exist')
+            console.print(f'[red]Connection to'
+                          f'[green]{from_path.host}:{from_path.path}[/green]'
+                          f'failed[/red] path may not exist')
             sys.exit()
         console.print(f'Connection to [green]{from_path.host}:{from_path.path}[/green] established')
         if not to_path.check_connection():
-            console.print(f'[red]Connection to [green]{to_path.host}:{to_path.path}[/green] failed[/red] path may not exist')
+            console.print(f'[red]Connection to'
+                          f'[green]{to_path.host}:{to_path.path}[/green]'
+                          f'failed[/red] path may not exist')
             sys.exit()
         console.print(f'Connection to [green]{to_path.host}:{to_path.path}[/green] established')
 
@@ -160,20 +164,32 @@ def main():
             console.print(f'[green]{len(to_files)}[/green] Files received from [green]{to_path.host}')
 
             # For each file do a merge on both sides.
-            status.update(status=f'[bold blue] Merging files from {from_path.host}:{from_path.path} -> {to_path.host}:{to_path.path}')
+            status.update(status=f'[bold blue] Merging files from'
+                          f'{from_path.host}:{from_path.path} ->'
+                          f'{to_path.host}:{to_path.path}')
 
         t0 = time.time()
 
         # Process tasks
-        tasks = [from_path.write(f, to_path, console.callback_write(from_path.host, f.short_path, to_path.host)) for f in from_files]
+        tasks = [from_path.write(f, to_path,
+                                 console.callback_write(from_path.host,
+                                                        f.short_path,
+                                                        to_path.host))
+                 for f in from_files]
 
         if tasks:
             run(tasks)
 
-        status.update(status=f'[bold blue] Merging files from {to_path.host}:{to_path.path} -> {from_path.host}:{from_path.path}')
+        status.update(status=f'[bold blue] Merging files from'
+                      f'{to_path.host}:{to_path.path} ->'
+                      f'{from_path.host}:{from_path.path}')
 
         if config.mirror:
-            tasks = [to_path.write(f, from_path, console.callback_write(from_path.host, f.short_path, to_path.host, True)) for f in to_files]
+            tasks = [to_path.write(f, from_path,
+                                   console.callback_write(from_path.host,
+                                                          f.short_path,
+                                                          to_path.host, True))
+                     for f in to_files]
 
             if tasks:
                 run(tasks)
@@ -195,10 +211,17 @@ def main():
 
             if from_req:
                 for r in from_req:
-                    req.append(from_path.write(r, to_path, console.callback_write(from_path.host, r.short_path, to_path.host)))
+                    req.append(from_path.write(r, to_path,
+                                               console.callback_write(from_path.host,
+                                                                      r.short_path,
+                                                                      to_path.host)))
             if to_req:
                 for r in to_req:
-                    req.append(to_path.write(r, from_path, console.callback_write(from_path.host, r.short_path, to_path.host, True)))
+                    req.append(to_path.write(r, from_path,
+                                             console.callback_write(from_path.host,
+                                                                    r.short_path,
+                                                                    to_path.host,
+                                                                    True)))
 
             if req:
                 run(req)
@@ -207,6 +230,5 @@ def main():
             time.sleep(1e-2)
 
 
-# TODO: Inspect remove multifile missing some? rm dir example
 if __name__ == '__main__':
     main()
