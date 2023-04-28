@@ -17,6 +17,7 @@ from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
 
 IGNORED_PATTERNS = ('*.swpx', '*.md5', '.swp', '.swx', '.DS_Store', '~')
+CHUNK_SIZE = 65535
 
 
 def enhance_pattern(pattern):
@@ -98,7 +99,7 @@ class Path:
     async def _empty(self):
         return None
 
-    def write(self, origin, target_holder, write_cb=None):
+    def write(self, origin, target_holder, write_cb=None, write_p_cb=None):
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
 
@@ -111,7 +112,7 @@ class Path:
             return self._empty()
 
         if origin.change_type in [None, 'C', 'M']:
-            return self._write(origin, target_holder, write_cb)
+            return self._write(origin, target_holder, write_cb, write_p_cb)
         else:
             return self._delete(origin, target_holder, write_cb)
 
@@ -138,7 +139,7 @@ class Path:
 
         return merged
 
-    async def _write(self, origin, target_holder, callback=None):
+    async def _write(self, origin, target_holder, callback=None, p_callback=None):
         """ Overwrite target with origin if newer """
         # Find correct path for target file
         target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
@@ -164,7 +165,8 @@ class Path:
 
             log.debug(f'Calling write on {target_path}')
             if not self.dry:
-                await target_holder._writefile(origin_content, target_path, mtime=origin.time)
+                await target_holder._writefile(origin_content, target_path,
+                                               mtime=origin.time, cb=p_callback)
             merged = True
 
         if callback is not None:
@@ -184,7 +186,7 @@ class Path:
             return res
 
     @abc.abstractmethod
-    async def _writefile(self, origin, target, mtime):
+    async def _writefile(self, origin, target, mtime, cb):
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -449,7 +451,7 @@ class RemotePath(Path):
         except (asyncssh.ProcessError, asyncssh.SFTPNoSuchFile):
             raise FileNotFoundError
 
-    async def _writefile(self, origin, target, mtime):
+    async def _writefile(self, origin, target, mtime, cb):
         path = self.sftp.encode(os.path.dirname(target))
 
         await self.sftp.makedirs(path, exist_ok=True)
@@ -603,11 +605,18 @@ class LocalPath(Path):
     async def get_time(self, path):
         return (await self.get_file(path)).time
 
-    async def _writefile(self, origin, target, mtime):
+    async def _writefile(self, origin, target, mtime, cb):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         async with self.open_sem:
             async with async_open(target, 'wb') as f:
-                await f.write(origin)
+                ith = 0
+                while ith * CHUNK_SIZE < len(origin):
+                    await f.write(origin[ith * CHUNK_SIZE: (ith + 1) * CHUNK_SIZE])
+                    ith += 1
+                    if cb is not None:
+                        cb(CHUNK_SIZE / len(origin))
+                if cb is not None:
+                    cb(None)
         os.utime(target, (mtime.timestamp(), mtime.timestamp()))
 
     async def _deletefile(self, target):
