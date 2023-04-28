@@ -8,7 +8,9 @@ import logging
 from dataclasses import dataclass, fields, MISSING, asdict
 from typing import Optional
 from functools import partial
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
+from rich.progress import Progress
 from iris.host import RemotePath, LocalPath, run
 logging.basicConfig()
 
@@ -46,9 +48,24 @@ class PrettyConsole(Console):
     def __init__(self):
         super().__init__()
         self.counter = 0
+        self.progress = Progress(console=self)
 
     def callback_write(self, from_host, path, to_host, rev=False):
         return partial(self.log_write, from_host=from_host, path=path, to_host=to_host, rev=rev)
+
+    def callback_progress(self, name):  # TODO: WRITING/READING
+        task_id = self.progress.add_task(f'[bold blue]Reading: {name}', total=1, visible=False)
+        return partial(self._callback_progress, id=task_id, name=name)
+
+    def _callback_progress(self, adv, id, name):
+        if adv is True:  # Use this to trigger completion
+            self.progress.remove_task(id)
+            return
+        if adv is False:
+            self.progress.reset(id, description=f'[bold blue]Writing: {name}')
+            return
+        self.progress._tasks[id].visible = True
+        self.progress.update(id, advance=adv)
 
     def log_write(self, merged, from_host, path, to_host, change, rev):
         # Choose change symbol
@@ -93,6 +110,12 @@ def init_config():
 def main():
     # Setup rich
     console = PrettyConsole()
+    status = console.status('[bold blue] Iris launching')
+    progress_group = Group(
+        console.progress,
+        status,
+    )
+
     log = logging.getLogger('iris')
     log.setLevel(logging.INFO)
 
@@ -139,17 +162,18 @@ def main():
     # Create signal after creating from_path and to_path for cleanup
     signal.signal(signal.SIGINT, cleanup)
 
-    with console.status('[bold blue] Testing connection to paths') as status:
+    status.update('[bold blue] Testing connection to paths')
+    with Live(progress_group, console=console):
         # Test connection to Paths is working.
         if not from_path.check_connection():
-            console.print(f'[red]Connection to'
-                          f'[green]{from_path.host}:{from_path.path}[/green]'
+            console.print(f'[red]Connection to '
+                          f'[green]{from_path.host}:{from_path.path}[/green] '
                           f'failed[/red] path may not exist')
             sys.exit()
         console.print(f'Connection to [green]{from_path.host}:{from_path.path}[/green] established')
         if not to_path.check_connection():
-            console.print(f'[red]Connection to'
-                          f'[green]{to_path.host}:{to_path.path}[/green]'
+            console.print(f'[red]Connection to '
+                          f'[green]{to_path.host}:{to_path.path}[/green] '
                           f'failed[/red] path may not exist')
             sys.exit()
         console.print(f'Connection to [green]{to_path.host}:{to_path.path}[/green] established')
@@ -164,8 +188,8 @@ def main():
             console.print(f'[green]{len(to_files)}[/green] Files received from [green]{to_path.host}')
 
             # For each file do a merge on both sides.
-            status.update(status=f'[bold blue] Merging files from'
-                          f'{from_path.host}:{from_path.path} ->'
+            status.update(status=f'[bold blue] Merging files from '
+                          f'{from_path.host}:{from_path.path} -> '
                           f'{to_path.host}:{to_path.path}')
 
         t0 = time.time()
@@ -174,21 +198,23 @@ def main():
         tasks = [from_path.write(f, to_path,
                                  console.callback_write(from_path.host,
                                                         f.short_path,
-                                                        to_path.host))
+                                                        to_path.host),
+                                 console.callback_progress(f.short_path))
                  for f in from_files]
 
         if tasks:
             run(tasks)
 
-        status.update(status=f'[bold blue] Merging files from'
-                      f'{to_path.host}:{to_path.path} ->'
+        status.update(status=f'[bold blue] Merging files from '
+                      f'{to_path.host}:{to_path.path} -> '
                       f'{from_path.host}:{from_path.path}')
 
         if config.mirror:
             tasks = [to_path.write(f, from_path,
                                    console.callback_write(from_path.host,
                                                           f.short_path,
-                                                          to_path.host, True))
+                                                          to_path.host, True),
+                                   console.callback_progress(f.short_path))
                      for f in to_files]
 
             if tasks:
@@ -196,7 +222,7 @@ def main():
 
         console.print(f'[bold blue]Initial sync completed in {(time.time() - t0):.2f} seconds')
 
-    with console.status('[bold blue] Launching watchdog programs') as status:
+        status.update('[bold blue] Launching watchdog programs')
         from_path.start_watchdog()
 
         if config.mirror:
@@ -214,14 +240,16 @@ def main():
                     req.append(from_path.write(r, to_path,
                                                console.callback_write(from_path.host,
                                                                       r.short_path,
-                                                                      to_path.host)))
+                                                                      to_path.host),
+                                               console.callback_progress(r.short_path)))
             if to_req:
                 for r in to_req:
                     req.append(to_path.write(r, from_path,
                                              console.callback_write(from_path.host,
                                                                     r.short_path,
                                                                     to_path.host,
-                                                                    True)))
+                                                                    True),
+                                             console.callback_progress(r.short_path)))
 
             if req:
                 run(req)
