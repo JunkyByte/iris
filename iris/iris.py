@@ -53,13 +53,16 @@ class PrettyConsole(Console):
     def callback_write(self, from_host, path, to_host, rev=False):
         return partial(self.log_write, from_host=from_host, path=path, to_host=to_host, rev=rev)
 
-    def callback_progress(self, name):
-        task_id = self.progress.add_task(f'[bold blue]Writing: {name}', total=1, visible=False)
-        return partial(self._callback_progress, id=task_id)
+    def callback_progress(self, name):  # TODO: WRITING/READING
+        task_id = self.progress.add_task(f'[bold blue]Reading: {name}', total=1, visible=False)
+        return partial(self._callback_progress, id=task_id, name=name)
 
-    def _callback_progress(self, adv, id):
-        if adv is None:  # Use this to trigger completion
+    def _callback_progress(self, adv, id, name):
+        if adv is True:  # Use this to trigger completion
             self.progress.remove_task(id)
+            return
+        if adv is False:
+            self.progress.reset(id, description=f'[bold blue]Writing: {name}')
             return
         self.progress._tasks[id].visible = True
         self.progress.update(id, advance=adv)
@@ -107,7 +110,7 @@ def init_config():
 def main():
     # Setup rich
     console = PrettyConsole()
-    status = console.status('iris status')
+    status = console.status('[bold blue] Iris launching')
     progress_group = Group(
         console.progress,
         status,
@@ -159,7 +162,7 @@ def main():
     # Create signal after creating from_path and to_path for cleanup
     signal.signal(signal.SIGINT, cleanup)
 
-    #with console.status('[bold blue] Testing connection to paths') as status:
+    status.update('[bold blue] Testing connection to paths')
     with Live(progress_group, console=console):
         # Test connection to Paths is working.
         if not from_path.check_connection():
@@ -237,14 +240,16 @@ def main():
                     req.append(from_path.write(r, to_path,
                                                console.callback_write(from_path.host,
                                                                       r.short_path,
-                                                                      to_path.host)))
+                                                                      to_path.host),
+                                               console.callback_progress(r.short_path)))
             if to_req:
                 for r in to_req:
                     req.append(to_path.write(r, from_path,
                                              console.callback_write(from_path.host,
                                                                     r.short_path,
                                                                     to_path.host,
-                                                                    True)))
+                                                                    True),
+                                             console.callback_progress(r.short_path)))
 
             if req:
                 run(req)

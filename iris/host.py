@@ -17,7 +17,6 @@ from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
 
 IGNORED_PATTERNS = ('*.swpx', '*.md5', '.swp', '.swx', '.DS_Store', '~')
-CHUNK_SIZE = 65535
 
 
 def enhance_pattern(pattern):
@@ -55,8 +54,8 @@ class File:
     def fetch_time(self):
         return self.holder.get_time(self.path)
 
-    def get_content(self):
-        return self.holder.get_content(self.path)
+    def get_content(self, cb=None):
+        return self.holder.get_content(self.path, cb)
 
     @property
     def short_path(self):
@@ -78,6 +77,7 @@ class Path:
         self.ignore_pattern = ignore_pattern
         self.wd = None
         self.tasks = None
+        self.CHUNK_SIZE = int(1e+7)  # Default 10 megabytes for each write/read progress
 
     def has_pattern(self, p, path):
         return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat)) for pat in self.pattern.split()])
@@ -159,7 +159,9 @@ class Path:
 
         merged = False
         if force or origin.time > target.time:
-            origin_content = await origin.get_content()
+            if not force:
+                print(origin.time, target.time)
+            origin_content = await origin.get_content(p_callback)
             if origin_content is None:
                 return False
 
@@ -198,7 +200,7 @@ class Path:
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def get_content(self, path):
+    async def get_content(self, path, cb):
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -430,13 +432,21 @@ class RemotePath(Path):
         files = [File(path, time, self) for time, path in files]
         return files[0] if len(files) == 1 else files
 
-    async def get_content(self, path):
+    async def get_content(self, path, cb):
         fd = BytesIO()
         try:
+            size = (await self.sftp.lstat(path)).size
             async with self.open_sem:
                 async with self.sftp.open(path, 'rb') as src:
-                    data = await src.read()
-            fd.write(data)
+                    data = True
+                    while data:
+                        data = await src.read(size=self.CHUNK_SIZE)
+                        if data:
+                            fd.write(data)
+                            if cb is not None:
+                                cb(self.CHUNK_SIZE / size)
+            if cb is not None:
+                cb(False)
         except asyncssh.SFTPNoSuchFile:
             return None
 
@@ -460,10 +470,16 @@ class RemotePath(Path):
 
         data = BytesIO(origin).read()
         async with self.open_sem:
-            attrs = asyncssh.SFTPAttrs(atime=mtime.timestamp(), mtime=mtime.timestamp())
-            async with self.sftp.open(target, 'wb', attrs) as dst:
-                await dst.write(data)
+            async with self.sftp.open(target, 'wb') as dst:
+                ith = 0
+                while ith * self.CHUNK_SIZE < len(origin):
+                    await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
+                    ith += 1
+                    if cb is not None:
+                        cb(self.CHUNK_SIZE / len(origin))
                 await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
+            if cb is not None:
+                cb(True)
 
     async def _deletefile(self, target):
         try:
@@ -572,6 +588,7 @@ class LocalPath(Path):
         super().__init__(os.path.expanduser(path), dry, pattern, ignore_pattern, *args, **kwargs)
         self.host = 'local'
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
+        self.CHUNK_SIZE = int(1e+8)  # 100 mb for local writing and reading
 
     def check_connection(self):
         if os.path.isdir(self.path):
@@ -594,10 +611,21 @@ class LocalPath(Path):
                 files.append(File(path, time, self))
         return files
 
-    async def get_content(self, path):
+    async def get_content(self, path, cb):
+        fd = BytesIO()
         async with self.open_sem:
-            async with async_open(path, 'rb') as f:
-                return await f.read()
+            size = os.path.getsize(path)
+            async with async_open(path, 'rb') as src:
+                data = True
+                while data:
+                    data = await src.read(length=self.CHUNK_SIZE)
+                    if data:
+                        fd.write(data)
+                        if cb is not None:
+                            cb(self.CHUNK_SIZE / size)
+        if cb is not None:
+            cb(False)
+        return fd.getvalue()
 
     async def get_file(self, path):
         return File(path, pathlib.Path(path).stat().st_mtime, self)
@@ -608,16 +636,16 @@ class LocalPath(Path):
     async def _writefile(self, origin, target, mtime, cb):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         async with self.open_sem:
-            async with async_open(target, 'wb') as f:
+            async with async_open(target, 'wb') as dst:
                 ith = 0
-                while ith * CHUNK_SIZE < len(origin):
-                    await f.write(origin[ith * CHUNK_SIZE: (ith + 1) * CHUNK_SIZE])
+                while ith * self.CHUNK_SIZE < len(origin):
+                    await dst.write(origin[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
                     ith += 1
                     if cb is not None:
-                        cb(CHUNK_SIZE / len(origin))
-                if cb is not None:
-                    cb(None)
-        os.utime(target, (mtime.timestamp(), mtime.timestamp()))
+                        cb(self.CHUNK_SIZE / len(origin))
+            if cb is not None:
+                cb(True)
+            os.utime(target, (mtime.timestamp(), mtime.timestamp()))
 
     async def _deletefile(self, target):
         try:
