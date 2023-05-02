@@ -27,6 +27,9 @@ def enhance_pattern(pattern):
 
 
 def run(tasks):
+    if not tasks:
+        return None
+
     if not isinstance(tasks, list):
         tasks = [tasks]
 

@@ -11,7 +11,7 @@ from functools import partial
 from rich.console import Console, Group
 from rich.live import Live
 from rich.progress import Progress
-from iris.host import RemotePath, LocalPath, run
+from .host import RemotePath, LocalPath, run
 logging.basicConfig()
 
 parser = argparse.ArgumentParser(description='iris is a command line tool to sync folders between local and remote')
@@ -187,10 +187,10 @@ def main():
             to_files = to_path.all_files()
             console.print(f'[green]{len(to_files)}[/green] Files received from [green]{to_path.host}')
 
-            # For each file do a merge on both sides.
-            status.update(status=f'[bold blue] Merging files from '
-                          f'{from_path.host}:{from_path.path} -> '
-                          f'{to_path.host}:{to_path.path}')
+        # For each file do a merge on both sides.
+        status.update(status=f'[bold blue] Merging files from '
+                      f'{from_path.host}:{from_path.path} -> '
+                      f'{to_path.host}:{to_path.path}')
 
         t0 = time.time()
 
@@ -201,24 +201,20 @@ def main():
                                                         to_path.host),
                                  console.callback_progress(f.short_path))
                  for f in from_files]
-
-        if tasks:
-            run(tasks)
-
-        status.update(status=f'[bold blue] Merging files from '
-                      f'{to_path.host}:{to_path.path} -> '
-                      f'{from_path.host}:{from_path.path}')
+        run(tasks)
 
         if config.mirror:
+            status.update(status=f'[bold blue] Merging files from '
+                          f'{to_path.host}:{to_path.path} -> '
+                          f'{from_path.host}:{from_path.path}')
+
             tasks = [to_path.write(f, from_path,
                                    console.callback_write(from_path.host,
                                                           f.short_path,
                                                           to_path.host, True),
                                    console.callback_progress(f.short_path))
                      for f in to_files]
-
-            if tasks:
-                run(tasks)
+            run(tasks)
 
         console.print(f'[bold blue]Initial sync completed in {(time.time() - t0):.2f} seconds')
 
