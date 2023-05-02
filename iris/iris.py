@@ -62,7 +62,7 @@ class PrettyConsole(Console):
             self.progress.remove_task(id)
             return
         if adv is False:
-            self.progress.reset(id, description=f'[bold blue]Writing: {name}')
+            self.progress.reset(id, description=f'[bold blue]Writing: {name}', visible=False)
             return
         self.progress._tasks[id].visible = True
         self.progress.update(id, advance=adv)

@@ -7,7 +7,6 @@ import getpass
 import stat
 import time
 import logging
-import posixpath
 from io import BytesIO
 from datetime import datetime
 from aiofile import async_open
@@ -16,6 +15,8 @@ from threading import Thread
 from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
 
+
+TMP_PREFIX = '.iris-tmp.'
 IGNORED_PATTERNS = ('*.swpx', '*.md5', '.swp', '.swx', '.DS_Store', '~')
 
 
@@ -83,10 +84,12 @@ class Path:
         self.CHUNK_SIZE = int(1e+7)  # Default 10 megabytes for each write/read progress
 
     def has_pattern(self, p, path):
-        return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat)) for pat in self.pattern.split()])
+        return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat))
+                    for pat in self.pattern.split()])
 
     def has_ignore(self, p, path):
-        return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat)) for pat in self.ignore_pattern.split()])
+        return any([fnmatchcase(p.split(path)[1], enhance_pattern(pat))
+                    for pat in self.ignore_pattern.split()])
 
     def __repr__(self):
         return f'Host {self.host}:{self.path}'
@@ -104,10 +107,18 @@ class Path:
 
     def write(self, origin, target_holder, write_cb=None, write_p_cb=None):
         # Find correct path for target file
-        target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
+        target_path = os.path.join(target_holder.path,
+                                   origin.holder.relative_path(origin.path))
+
+        # If the file encountered is a tmp file just delete it
+        # This does not seem the best place but it works fine
+        if target_path.startswith(TMP_PREFIX):
+            self._delete(origin, target_holder)
+            return self._empty()
 
         # Ignore some files (this is a good place as is implementation independent)
-        if target_path.endswith(IGNORED_PATTERNS) or self.has_ignore(target_path, target_holder.path):
+        if (target_path.endswith(IGNORED_PATTERNS)
+                or self.has_ignore(target_path, target_holder.path)):
             log.debug(f'Ignored file {origin}')
             return self._empty()
 
@@ -122,7 +133,8 @@ class Path:
     async def _delete(self, origin, target_holder, callback=None):
         """ Delete file """
         # Find correct path for target file
-        target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
+        target_path = os.path.join(target_holder.path,
+                                   origin.holder.relative_path(origin.path))
 
         target = None
         try:
@@ -145,7 +157,8 @@ class Path:
     async def _write(self, origin, target_holder, callback=None, p_callback=None):
         """ Overwrite target with origin if newer """
         # Find correct path for target file
-        target_path = os.path.join(target_holder.path, origin.holder.relative_path(origin.path))
+        target_path = os.path.join(target_holder.path,
+                                   origin.holder.relative_path(origin.path))
         force = False
         target = None
         try:
@@ -153,7 +166,7 @@ class Path:
         except FileNotFoundError:
             force = True
 
-        # Watchdog return File instance with no time, we fetch it now
+        # Watchdog return File instances with no time, we fetch it now
         try:
             if origin.time is None:
                 origin.time = await origin.fetch_time()
@@ -168,8 +181,11 @@ class Path:
 
             log.debug(f'Calling write on {target_path}')
             if not self.dry:
-                await target_holder._writefile(origin_content, target_path,
+                basename = os.path.basename(target_path)
+                tmp_target_path = target_path.replace(basename, f'{TMP_PREFIX}{basename}')
+                await target_holder._writefile(origin_content, tmp_target_path,
                                                mtime=origin.time, cb=p_callback)
+                await target_holder._renamefile(tmp_target_path, target_path)
             merged = True
 
         if callback is not None:
@@ -195,6 +211,10 @@ class Path:
 
     @abc.abstractmethod
     async def _deletefile(self, target):
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def _renamefile(self, old_path, new_path):
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -260,7 +280,8 @@ class RemotePath(Path):
                 self.key = RemotePath.import_private_key(key)
             except FileNotFoundError:
                 self.key = None
-                self.password = getpass.getpass('No valid key found, specify a password for auth: ')
+                self.password = getpass.getpass('No valid key found, '
+                                                'specify a password for auth: ')
 
         self._conn = None
         self._sftp = None
@@ -284,19 +305,23 @@ class RemotePath(Path):
         self._sftp = await self.conn.start_sftp_client(env={'block_size': 32768})
         return self._sftp
 
-    # def connection_lost(self, exc):
-    #     print('*** CONNECTION LOST ***')
-
     async def ssh_connect(self):
-        options = asyncssh.SSHClientConnectionOptions(client_keys=self.key if self.key is not None else None,
-                                                      password=self.password if self.key is None else None
-                                                      )
+        options = asyncssh.SSHClientConnectionOptions(
+            client_keys=self.key if self.key is not None else None,
+            password=self.password if self.key is None else None)
         if self.jump:
-            self._tunnel = await asyncssh.connect(self.jump_host, port=self.jump_port, username=self.jump_user, options=options)
-            self._conn = await self._tunnel.connect_ssh(self.host, port=self.port, username=self.user, options=options)
+            self._tunnel = await asyncssh.connect(self.jump_host,
+                                                  port=self.jump_port,
+                                                  username=self.jump_user,
+                                                  options=options)
+            self._conn = await self._tunnel.connect_ssh(self.host,
+                                                        port=self.port,
+                                                        username=self.user,
+                                                        options=options)
         else:
-            self._conn = await asyncssh.connect(self.host, port=self.port, username=self.user, options=options)
-        # self._conn.connection_lost = self.connection_lost
+            self._conn = await asyncssh.connect(self.host, port=self.port,
+                                                username=self.user,
+                                                options=options)
         return self._conn
 
     def load_agent_keys(agent_path=None):
@@ -360,9 +385,9 @@ class RemotePath(Path):
                 sshkey = asyncssh.import_private_key(data)
             except asyncssh.KeyImportError:
                 while True:
-                    passphrase = getpass.getpass("Enter passphrase for key {} : ".format(basename))
+                    passphrase = getpass.getpass(f"Enter passphrase for key {basename} : ")
                     if not passphrase:
-                        log.info("Ignoring key {}".format(filename))
+                        log.info(f"Ignoring key {filename}")
                         break
                     try:
                         sshkey = asyncssh.import_private_key(data, passphrase)
@@ -384,13 +409,13 @@ class RemotePath(Path):
                 await self.conn  # This will initialize the connections
             except asyncssh.misc.PermissionDenied:
                 self.key = None
-                print('No valid key found, specify a password for auth:')  # TODO: This is temporary
+                # TODO: This is temporary
+                print('No valid key found, specify a password for auth:')
                 self.password = getpass.getpass()
                 await self.conn
             await self.sftp
 
         try:  # Check connection to remote host
-            # Check path is valid
             if await self.sftp.isdir(self.path):
                 return True
             return False
@@ -416,7 +441,8 @@ class RemotePath(Path):
                 continue
 
             remotepath = os.path.join(path, f.filename)
-            if not self.has_pattern(remotepath, self.path) or self.has_ignore(remotepath, self.path):
+            if (not self.has_pattern(remotepath, self.path)
+                    or self.has_ignore(remotepath, self.path)):
                 continue
 
             if stat.S_ISDIR(f.attrs.permissions):
@@ -489,6 +515,9 @@ class RemotePath(Path):
         except (asyncssh.ProcessError, asyncssh.SFTPNoSuchFile):
             pass
 
+    async def _renamefile(self, old_path, new_path):
+        await self.sftp.rename(old_path, new_path)
+
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
         self.tasks = Queue(maxsize=-1)
@@ -549,12 +578,14 @@ class RemoteWDThread(Thread):
         loop = asyncio.new_event_loop()
 
         async def async_wd():
-            options = asyncssh.SSHClientConnectionOptions(client_keys=self.key,
-                                                          password=self.password if self.key is None else None)
+            options = asyncssh.SSHClientConnectionOptions(
+                client_keys=self.key,
+                password=self.password if self.key is None else None)
             provider = asyncssh.connect
             if self.jump:
                 self._tunnel = await asyncssh.connect(self.jump_host,
-                                                      port=self.jump_port, username=self.jump_user,
+                                                      port=self.jump_port,
+                                                      username=self.jump_user,
                                                       options=options)
                 provider = self._tunnel.connect_ssh
 
@@ -614,6 +645,8 @@ class LocalPath(Path):
         return files
 
     async def get_content(self, path, cb):
+        if not os.path.isfile(path):
+            return None
         fd = BytesIO()
         async with self.open_sem:
             size = os.path.getsize(path)
@@ -655,9 +688,13 @@ class LocalPath(Path):
         except FileNotFoundError:
             pass
 
+    async def _renamefile(self, old_path, new_path):
+        os.rename(old_path, new_path)
+
     def _wd(path, self, q):
         from iris.watchdog_service import run_wd
-        run_wd(path, queue=q, log=True, pattern=self.pattern, ignore_pattern=self.ignore_pattern)
+        run_wd(path, queue=q, log=True, pattern=self.pattern,
+               ignore_pattern=self.ignore_pattern)
         while True:
             path, isdir, change, mtime = q.get().split('%')
             log.debug(f'Local WD event: {path} {isdir} {change} {mtime}')
@@ -669,6 +706,8 @@ class LocalPath(Path):
         assert self.tasks is None, 'Already initialized the watchdog'
         self.tasks = Queue(maxsize=-1)
 
-        self.wd = Thread(target=LocalPath._wd, args=(os.path.abspath(self.path), self, Queue(maxsize=-1)))
+        self.wd = Thread(target=LocalPath._wd,
+                         args=(os.path.abspath(self.path), self,
+                               Queue(maxsize=-1)))
         self.wd.daemon = True
         self.wd.start()
