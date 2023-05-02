@@ -159,8 +159,6 @@ class Path:
 
         merged = False
         if force or origin.time > target.time:
-            if not force:
-                print(origin.time, target.time)
             origin_content = await origin.get_content(p_callback)
             if origin_content is None:
                 return False
