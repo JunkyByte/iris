@@ -61,7 +61,7 @@ class File:
     def short_path(self):
         return self.path.split(self.holder.path)[-1]
 
-    def __repr__(self, short=True):
+    def __repr__(self):
         try:
             return f'Path: {self.path} - {self.time.ctime()} - {self.time.timestamp()}'
         except AttributeError:
@@ -183,7 +183,8 @@ class Path:
             for i in range(n):
                 res.append(self.tasks.get_nowait())
         except Empty:
-            return res
+            pass
+        return res
 
     @abc.abstractmethod
     async def _writefile(self, origin, target, mtime, cb):
