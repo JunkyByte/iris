@@ -516,7 +516,7 @@ class RemotePath(Path):
             pass
 
     async def _renamefile(self, old_path, new_path):
-        await self.sftp.rename(old_path, new_path)
+        await self.sftp.rename(old_path, new_path, flags=0x00000001)
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
