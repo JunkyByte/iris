@@ -10,6 +10,7 @@ Iris features are:
 - Changes are sync in realtime using python watchdogs both locally and remotely
 - Modification time is preserved during copy, merge by newer strategy is used
 - Pattern / Pattern ignore settings
+- Progress bars during large transfers
 
 Linux / Mac / Windows support (UNTESTED Windows)
 
@@ -21,7 +22,7 @@ pip install .
 ```
 
 ### Remote installation
-On remote host you do not need all dependencies, if you have a working python3 install the watchdog package and you should be set
+On remote host you do not need all dependencies, if you have a working python3 env just install the watchdog package and you should be set
 ```
 pip install watchdog
 ```
