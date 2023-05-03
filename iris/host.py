@@ -110,11 +110,10 @@ class Path:
         target_path = os.path.join(target_holder.path,
                                    origin.holder.relative_path(origin.path))
 
-        # If the file encountered is a tmp file just delete it
+        # If tried to write a tmp file just delete original and return
         # This does not seem the best place but it works fine
-        if target_path.startswith(TMP_PREFIX):
-            self._delete(origin, target_holder)
-            return self._empty()
+        if os.path.basename(target_path).startswith(TMP_PREFIX):
+            return self._delete(origin, origin.holder)
 
         # Ignore some files (this is a good place as is implementation independent)
         if (target_path.endswith(IGNORED_PATTERNS)
@@ -516,7 +515,10 @@ class RemotePath(Path):
             pass
 
     async def _renamefile(self, old_path, new_path):
-        await self.sftp.rename(old_path, new_path, flags=0x00000001)
+        try:
+            await self.sftp.rename(old_path, new_path, flags=0x00000001)
+        except (asyncssh.ProcessError, asyncssh.SFTPNoSuchFile):
+            pass
 
     def start_watchdog(self):
         assert self.tasks is None, 'Already initialized the watchdog'
@@ -689,7 +691,10 @@ class LocalPath(Path):
             pass
 
     async def _renamefile(self, old_path, new_path):
-        os.rename(old_path, new_path)
+        try:
+            os.replace(old_path, new_path)
+        except FileNotFoundError:
+            pass
 
     def _wd(path, self, q):
         from iris.watchdog_service import run_wd

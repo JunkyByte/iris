@@ -44,10 +44,10 @@ class WatchdogManager:
                 t = os.stat(path).st_mtime
 
                 # Skip if too close to last event already dispatched (on same file)
-                if self.prev_ev['path'] == path and datetime.fromtimestamp(time.time()) - self.prev_ev['time'] < timedelta(seconds=0.5):
+                if self.prev_ev['path'] == path and datetime.fromtimestamp(time.time()) - self.prev_ev['time'] < timedelta(seconds=0.2):
                     return
             else:
-                t = time.time()  # On file deletion use current time as stamp
+                t = time.time()  # On file deletion use current time as timestamp
 
                 if os.path.isfile(path):
                     return
