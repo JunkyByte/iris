@@ -470,7 +470,7 @@ class RemotePath(Path):
                         data = await src.read(size=self.CHUNK_SIZE)
                         if data:
                             fd.write(data)
-                            if cb is not None:
+                            if cb is not None and size > self.CHUNK_SIZE:
                                 cb(self.CHUNK_SIZE / size)
             if cb is not None:
                 cb(False)
@@ -502,7 +502,7 @@ class RemotePath(Path):
                 while ith * self.CHUNK_SIZE < len(origin):
                     await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
                     ith += 1
-                    if cb is not None:
+                    if cb is not None and len(origin) > self.CHUNK_SIZE:
                         cb(self.CHUNK_SIZE / len(origin))
                 await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
             if cb is not None:
@@ -658,7 +658,7 @@ class LocalPath(Path):
                     data = await src.read(length=self.CHUNK_SIZE)
                     if data:
                         fd.write(data)
-                        if cb is not None:
+                        if cb is not None and size > self.CHUNK_SIZE:
                             cb(self.CHUNK_SIZE / size)
         if cb is not None:
             cb(False)
@@ -678,7 +678,7 @@ class LocalPath(Path):
                 while ith * self.CHUNK_SIZE < len(origin):
                     await dst.write(origin[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
                     ith += 1
-                    if cb is not None:
+                    if cb is not None and len(origin) > self.CHUNK_SIZE:
                         cb(self.CHUNK_SIZE / len(origin))
             if cb is not None:
                 cb(True)

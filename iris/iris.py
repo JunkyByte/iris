@@ -53,7 +53,7 @@ class PrettyConsole(Console):
     def callback_write(self, from_host, path, to_host, rev=False):
         return partial(self.log_write, from_host=from_host, path=path, to_host=to_host, rev=rev)
 
-    def callback_progress(self, name):  # TODO: WRITING/READING
+    def callback_progress(self, name):
         task_id = self.progress.add_task(f'[bold blue]Reading: {name}', total=1, visible=False)
         return partial(self._callback_progress, id=task_id, name=name)
 
