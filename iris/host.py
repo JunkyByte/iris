@@ -27,6 +27,15 @@ def enhance_pattern(pattern):
     return pattern
 
 
+async def gather_with_concurrency(n, *coros):
+    semaphore = asyncio.Semaphore(n)
+
+    async def sem_coro(coro):
+        async with semaphore:
+            return await coro
+    return await asyncio.gather(*(sem_coro(c) for c in coros))
+
+
 def run(tasks):
     if not tasks:
         return None
@@ -35,7 +44,7 @@ def run(tasks):
         tasks = [tasks]
 
     loop = asyncio.get_event_loop()
-    res = loop.run_until_complete(asyncio.gather(*tasks))[0]
+    res = loop.run_until_complete(gather_with_concurrency(128, *tasks))[0]  # TODO: Gather concurrency?
     return res
 
 
@@ -301,7 +310,7 @@ class RemotePath(Path):
         return self._sftp
 
     async def sftp_connect(self):  # This is awaited on check connection
-        self._sftp = await self.conn.start_sftp_client(env={'block_size': 32768})
+        self._sftp = await self.conn.start_sftp_client()
         return self._sftp
 
     async def ssh_connect(self):
@@ -464,7 +473,7 @@ class RemotePath(Path):
         try:
             size = (await self.sftp.lstat(path)).size
             async with self.open_sem:
-                async with self.sftp.open(path, 'rb') as src:
+                async with self.sftp.open(path, 'rb', block_size=65536 * 100) as src:
                     data = True
                     while data:
                         data = await src.read(size=self.CHUNK_SIZE)
@@ -497,7 +506,7 @@ class RemotePath(Path):
 
         data = BytesIO(origin).read()
         async with self.open_sem:
-            async with self.sftp.open(target, 'wb') as dst:
+            async with self.sftp.open(target, 'wb', block_size=65536 * 100) as dst:
                 ith = 0
                 while ith * self.CHUNK_SIZE < len(origin):
                     await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
