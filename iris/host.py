@@ -6,6 +6,7 @@ import asyncio
 import getpass
 import stat
 import time
+import uvloop
 import logging
 from io import BytesIO
 from datetime import datetime
@@ -14,6 +15,7 @@ from queue import Queue, Empty
 from threading import Thread
 from fnmatch import fnmatchcase
 log = logging.getLogger('iris')
+uvloop.install()
 
 
 TMP_PREFIX = '.iris-tmp.'
@@ -44,7 +46,7 @@ def run(tasks):
         tasks = [tasks]
 
     loop = asyncio.get_event_loop()
-    res = loop.run_until_complete(gather_with_concurrency(128, *tasks))[0]  # TODO: Gather concurrency?
+    res = loop.run_until_complete(gather_with_concurrency(32, *tasks))[0]  # TODO: Gather concurrency?
     return res
 
 
@@ -295,6 +297,7 @@ class RemotePath(Path):
         self._sftp = None
         self._last_check = 0
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
+        self.open_sessions = asyncio.Semaphore(8)  # Max open files?
         self.req = set()
 
     @property
@@ -471,16 +474,18 @@ class RemotePath(Path):
     async def get_content(self, path, cb):
         fd = BytesIO()
         try:
-            size = (await self.sftp.lstat(path)).size
-            async with self.open_sem:
-                async with self.sftp.open(path, 'rb', block_size=65536 * 100) as src:
-                    data = True
-                    while data:
-                        data = await src.read(size=self.CHUNK_SIZE)
-                        if data:
-                            fd.write(data)
-                            if cb is not None and size > self.CHUNK_SIZE:
-                                cb(self.CHUNK_SIZE / size)
+            async with self.open_sessions:
+                async with self.conn.start_sftp_client() as sftp:
+                    size = (await sftp.lstat(path)).size
+                    async with self.open_sem:
+                        async with sftp.open(path, 'rb', block_size=65536) as src:
+                            data = True
+                            while data:
+                                data = await src.read(size=self.CHUNK_SIZE)
+                                if data:
+                                    fd.write(data)
+                                    if cb is not None and size > self.CHUNK_SIZE:
+                                        cb(self.CHUNK_SIZE / size)
             if cb is not None:
                 cb(False)
         except asyncssh.SFTPNoSuchFile:
@@ -500,20 +505,23 @@ class RemotePath(Path):
     async def _writefile(self, origin, target, mtime, cb):
         path = self.sftp.encode(os.path.dirname(target))
 
-        await self.sftp.makedirs(path, exist_ok=True)
-        if not await self.sftp.isdir(path):
-            raise asyncssh.SFTPFailure(f'{path} is not a directory') from None
+        async with self.open_sessions:
+            async with self.conn.start_sftp_client() as sftp:
 
-        data = BytesIO(origin).read()
-        async with self.open_sem:
-            async with self.sftp.open(target, 'wb', block_size=65536 * 100) as dst:
-                ith = 0
-                while ith * self.CHUNK_SIZE < len(origin):
-                    await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
-                    ith += 1
-                    if cb is not None and len(origin) > self.CHUNK_SIZE:
-                        cb(self.CHUNK_SIZE / len(origin))
-                await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
+                await sftp.makedirs(path, exist_ok=True)
+                if not await sftp.isdir(path):
+                    raise asyncssh.SFTPFailure(f'{path} is not a directory') from None
+
+                data = BytesIO(origin).read()
+                async with self.open_sem:
+                        async with sftp.open(target, 'wb', block_size=65536) as dst:
+                            ith = 0
+                            while ith * self.CHUNK_SIZE < len(origin):
+                                await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
+                                ith += 1
+                                if cb is not None and len(origin) > self.CHUNK_SIZE:
+                                    cb(self.CHUNK_SIZE / len(origin))
+                            await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
             if cb is not None:
                 cb(True)
 
