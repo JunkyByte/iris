@@ -297,8 +297,9 @@ class RemotePath(Path):
         self._sftp = None
         self._last_check = 0
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
-        self.open_sessions = asyncio.Semaphore(8)  # Max open files?
         self.req = set()
+
+        self.sessions = {}
 
     @property
     def conn(self):
@@ -308,13 +309,25 @@ class RemotePath(Path):
 
     @property
     def sftp(self):
-        if self._sftp is None:
-            return self.sftp_connect()
-        return self._sftp
+        if not self.sessions:
+            return self.open_sftp_sessions()
 
-    async def sftp_connect(self):  # This is awaited on check connection
-        self._sftp = await self.conn.start_sftp_client()
-        return self._sftp
+        # Choose the most empty session
+        m = None
+        sftp = None
+        for sess, occ in self.sessions.items():
+            if sftp is None or occ < m:
+                m = occ
+                sftp = sess
+        self.sessions[sftp] += 1
+        return sftp
+
+    async def open_sftp_sessions(self):  # This is awaited on check connection
+        N = 10   # TODO: Max number possible by settings / etc
+        for _ in range(N):
+            sftp = await self.conn.start_sftp_client()
+            self.sessions[sftp] = 0
+        return sftp  # We need to return one to be used
 
     async def ssh_connect(self):
         options = asyncssh.SSHClientConnectionOptions(
@@ -473,24 +486,24 @@ class RemotePath(Path):
 
     async def get_content(self, path, cb):
         fd = BytesIO()
+        sftp = self.sftp
         try:
-            async with self.open_sessions:
-                async with self.conn.start_sftp_client() as sftp:
-                    size = (await sftp.lstat(path)).size
-                    async with self.open_sem:
-                        async with sftp.open(path, 'rb', block_size=65536) as src:
-                            data = True
-                            while data:
-                                data = await src.read(size=self.CHUNK_SIZE)
-                                if data:
-                                    fd.write(data)
-                                    if cb is not None and size > self.CHUNK_SIZE:
-                                        cb(self.CHUNK_SIZE / size)
+            size = (await sftp.lstat(path)).size
+            async with self.open_sem:
+                async with sftp.open(path, 'rb', block_size=65536) as src:
+                    data = True
+                    while data:
+                        data = await src.read(size=self.CHUNK_SIZE)
+                        if data:
+                            fd.write(data)
+                            if cb is not None and size > self.CHUNK_SIZE:
+                                cb(self.CHUNK_SIZE / size)
             if cb is not None:
                 cb(False)
         except asyncssh.SFTPNoSuchFile:
             return None
 
+        self.sessions[sftp] -= 1
         return fd.getvalue()
 
     async def get_time(self, path):
@@ -503,27 +516,27 @@ class RemotePath(Path):
             raise FileNotFoundError
 
     async def _writefile(self, origin, target, mtime, cb):
-        path = self.sftp.encode(os.path.dirname(target))
+        sftp = self.sftp
+        path = sftp.encode(os.path.dirname(target))
 
-        async with self.open_sessions:
-            async with self.conn.start_sftp_client() as sftp:
+        await sftp.makedirs(path, exist_ok=True)
+        if not await sftp.isdir(path):
+            raise asyncssh.SFTPFailure(f'{path} is not a directory') from None
 
-                await sftp.makedirs(path, exist_ok=True)
-                if not await sftp.isdir(path):
-                    raise asyncssh.SFTPFailure(f'{path} is not a directory') from None
+        data = BytesIO(origin).read()
+        async with self.open_sem:
+                async with sftp.open(target, 'wb', block_size=65536) as dst:
+                    ith = 0
+                    while ith * self.CHUNK_SIZE < len(origin):
+                        await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
+                        ith += 1
+                        if cb is not None and len(origin) > self.CHUNK_SIZE:
+                            cb(self.CHUNK_SIZE / len(origin))
+                    await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
+        if cb is not None:
+            cb(True)
 
-                data = BytesIO(origin).read()
-                async with self.open_sem:
-                        async with sftp.open(target, 'wb', block_size=65536) as dst:
-                            ith = 0
-                            while ith * self.CHUNK_SIZE < len(origin):
-                                await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
-                                ith += 1
-                                if cb is not None and len(origin) > self.CHUNK_SIZE:
-                                    cb(self.CHUNK_SIZE / len(origin))
-                            await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
-            if cb is not None:
-                cb(True)
+        self.sessions[sftp] -= 1
 
     async def _deletefile(self, target):
         try:
