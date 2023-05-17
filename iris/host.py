@@ -1,4 +1,5 @@
 import abc
+import random
 import os
 import pathlib
 import asyncssh
@@ -46,7 +47,7 @@ def run(tasks):
         tasks = [tasks]
 
     loop = asyncio.get_event_loop()
-    res = loop.run_until_complete(gather_with_concurrency(32, *tasks))[0]  # TODO: Gather concurrency?
+    res = loop.run_until_complete(gather_with_concurrency(64, *tasks))[0]  # TODO: Gather concurrency?
     return res
 
 
@@ -299,7 +300,7 @@ class RemotePath(Path):
         self.open_sem = asyncio.Semaphore(128)  # Max open files?
         self.req = set()
 
-        self.sessions = {}
+        self.sessions = []
 
     @property
     def conn(self):
@@ -311,23 +312,15 @@ class RemotePath(Path):
     def sftp(self):
         if not self.sessions:
             return self.open_sftp_sessions()
-
-        # Choose the most empty session
-        m = None
-        sftp = None
-        for sess, occ in self.sessions.items():
-            if sftp is None or occ < m:
-                m = occ
-                sftp = sess
-        self.sessions[sftp] += 1
-        return sftp
+        return random.choice(self.sessions)  # A bit of RNG
 
     async def open_sftp_sessions(self):  # This is awaited on check connection
-        N = 10   # TODO: Max number possible by settings / etc
-        for _ in range(N):
-            sftp = await self.conn.start_sftp_client()
-            self.sessions[sftp] = 0
-        return sftp  # We need to return one to be used
+        max_sessions = (await self.conn.run(r'sed -n "s/^MaxSessions\s*\([[:digit:]]*\)/\1/p" ' \
+                                  '/etc/ssh/sshd_config', check=True)).stdout
+
+        max_sessions = int(max_sessions) or 10
+        self.sessions = [await self.conn.start_sftp_client() for _ in range(max_sessions)]
+        return self.sessions[0]  # We need to return one to be used
 
     async def ssh_connect(self):
         options = asyncssh.SSHClientConnectionOptions(
@@ -490,7 +483,7 @@ class RemotePath(Path):
         try:
             size = (await sftp.lstat(path)).size
             async with self.open_sem:
-                async with sftp.open(path, 'rb', block_size=65536) as src:
+                async with sftp.open(path, 'rb', block_size=32768) as src:
                     data = True
                     while data:
                         data = await src.read(size=self.CHUNK_SIZE)
@@ -503,7 +496,6 @@ class RemotePath(Path):
         except asyncssh.SFTPNoSuchFile:
             return None
 
-        self.sessions[sftp] -= 1
         return fd.getvalue()
 
     async def get_time(self, path):
@@ -525,7 +517,7 @@ class RemotePath(Path):
 
         data = BytesIO(origin).read()
         async with self.open_sem:
-                async with sftp.open(target, 'wb', block_size=65536) as dst:
+                async with sftp.open(target, 'wb', block_size=32768) as dst:
                     ith = 0
                     while ith * self.CHUNK_SIZE < len(origin):
                         await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
@@ -535,8 +527,6 @@ class RemotePath(Path):
                     await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
         if cb is not None:
             cb(True)
-
-        self.sessions[sftp] -= 1
 
     async def _deletefile(self, target):
         try:
