@@ -318,7 +318,11 @@ class RemotePath(Path):
         max_sessions = (await self.conn.run(r'sed -n "s/^MaxSessions\s*\([[:digit:]]*\)/\1/p" ' \
                                   '/etc/ssh/sshd_config', check=True)).stdout
 
-        max_sessions = int(max_sessions) or 10
+        try:
+            max_sessions = max_sessions or 10
+        except ValueError:
+            max_sessions = 10
+
         self.sessions = [await self.conn.start_sftp_client() for _ in range(max_sessions)]
         return self.sessions[0]  # We need to return one to be used
 
@@ -483,7 +487,7 @@ class RemotePath(Path):
         try:
             size = (await sftp.lstat(path)).size
             async with self.open_sem:
-                async with sftp.open(path, 'rb', block_size=32768) as src:
+                async with sftp.open(path, 'rb', block_size=65536) as src:
                     data = True
                     while data:
                         data = await src.read(size=self.CHUNK_SIZE)
@@ -517,7 +521,7 @@ class RemotePath(Path):
 
         data = BytesIO(origin).read()
         async with self.open_sem:
-                async with sftp.open(target, 'wb', block_size=32768) as dst:
+                async with sftp.open(target, 'wb', block_size=65536) as dst:
                     ith = 0
                     while ith * self.CHUNK_SIZE < len(origin):
                         await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])

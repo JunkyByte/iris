@@ -3,3 +3,4 @@ asyncssh==2.13.0
 PyYAML==6.0
 rich==13.1.0
 watchdog==2.2.1
+uvloop>=0.17.0
