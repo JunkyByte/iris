@@ -319,7 +319,7 @@ class RemotePath(Path):
                                   '/etc/ssh/sshd_config', check=True)).stdout
 
         try:
-            max_sessions = max_sessions or 10
+            max_sessions = int(max_sessions) or 10
         except ValueError:
             max_sessions = 10
 
