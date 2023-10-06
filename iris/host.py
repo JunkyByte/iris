@@ -315,12 +315,14 @@ class RemotePath(Path):
         return random.choice(self.sessions)  # A bit of RNG
 
     async def open_sftp_sessions(self):  # This is awaited on check connection
-        max_sessions = (await self.conn.run(r'sed -n "s/^MaxSessions\s*\([[:digit:]]*\)/\1/p" ' \
-                                  '/etc/ssh/sshd_config', check=True)).stdout
-
         try:
-            max_sessions = int(max_sessions) or 10
-        except ValueError:
+            max_sessions = (await self.conn.run(r'sed -n "s/^MaxSessions\s*\([[:digit:]]*\)/\1/p" ' \
+                                      '/etc/ssh/sshd_config', check=True)).stdout
+            try:
+                max_sessions = int(max_sessions) or 10
+            except ValueError:
+                max_sessions = 10
+        except asyncssh.ProcessError:
             max_sessions = 10
 
         self.sessions = [await self.conn.start_sftp_client() for _ in range(max_sessions)]
