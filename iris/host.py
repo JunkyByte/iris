@@ -617,7 +617,7 @@ class RemoteWDThread(Thread):
                                                       options=options)
                 provider = self._tunnel.connect_ssh
 
-            async with provider(self.host, port=self.port,
+            async with provider(self.host, port=self.port, username=self.user,
                                 keepalive_interval=60, keepalive_count_max=9,
                                 options=options) as conn:
                 async with conn.create_process('python3 -u /tmp/iris_wd.py',
