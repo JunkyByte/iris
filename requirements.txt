@@ -1,5 +1,5 @@
 aiofile==3.8.1
-asyncssh==2.13.0
+asyncssh==2.14.1
 PyYAML==6.0
 rich==13.1.0
 watchdog==2.2.1
