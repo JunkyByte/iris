@@ -59,12 +59,13 @@ ignore_pattern:  # Patterns for ignore by file name separated by a space
 
 origin_path:  # The `origin` absolute path
 dest_path:  # The `dest` absolute path
+origin_key: # The key to use for origin ssh (if is remote)
+dest_key: # The key to use for dest ssh (if is remote)
 ```
 Note that if no user is specified on ssh host the local username will be used.
 
 Right now iris requires a config file to be passed.
-For remote connections iris will try to load from your `ssh-agent` first, if it fails right now it uses `~/.ssh/id_rsa` as a key.
-(This will be a config option at some point)
+For remote connections iris will try to load from your `ssh-agent` first. If it fails it will use the key specified in the config file. More work is required in this regard.
 
 ## Under the hood
 Iris uses `asyncssh` (which I recommend) for sftp file monitoring / writing, `aiofile` for async local file writing,

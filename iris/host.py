@@ -21,6 +21,7 @@ uvloop.install()
 
 TMP_PREFIX = '.iris-tmp.'
 IGNORED_PATTERNS = ('*.swpx', '*.md5', '.swp', '.swx', '.DS_Store', '~')
+DEFAULT_MAX_SESSIONS = 10
 
 
 def enhance_pattern(pattern):
@@ -194,8 +195,10 @@ class Path:
             if not self.dry:
                 basename = os.path.basename(target_path)
                 tmp_target_path = target_path.replace(basename, f'{TMP_PREFIX}{basename}')
+                log.debug(f'Calling _writefile on {target_path}')
                 await target_holder._writefile(origin_content, tmp_target_path,
                                                mtime=origin.time, cb=p_callback)
+                log.debug(f'Calling _renamefile from {tmp_target_path} to {target_path}')
                 await target_holder._renamefile(tmp_target_path, target_path)
             merged = True
 
@@ -285,8 +288,12 @@ class RemotePath(Path):
 
         self.password = None
         try:
+            # First try to load ssh-agent
             self.key = RemotePath.load_agent_keys()
+            if not self.key:
+                raise ValueError
         except ValueError:
+            # if it fails ask for passphrase and import key
             try:
                 self.key = RemotePath.import_private_key(key)
             except FileNotFoundError:
@@ -319,11 +326,11 @@ class RemotePath(Path):
             max_sessions = (await self.conn.run(r'sed -n "s/^MaxSessions\s*\([[:digit:]]*\)/\1/p" ' \
                                       '/etc/ssh/sshd_config', check=True)).stdout
             try:
-                max_sessions = int(max_sessions) or 10
+                max_sessions = int(max_sessions) or DEFAULT_MAX_SESSIONS
             except ValueError:
-                max_sessions = 10
+                max_sessions = DEFAULT_MAX_SESSIONS
         except asyncssh.ProcessError:
-            max_sessions = 10
+            max_sessions = DEFAULT_MAX_SESSIONS
 
         self.sessions = [await self.conn.start_sftp_client() for _ in range(max_sessions)]
         return self.sessions[0]  # We need to return one to be used
@@ -428,14 +435,7 @@ class RemotePath(Path):
         self._last_check = time.time()
 
         if self._conn is None:
-            try:
-                await self.conn  # This will initialize the connections
-            except asyncssh.misc.PermissionDenied:
-                self.key = None
-                # TODO: This is temporary
-                print('No valid key found, specify a password for auth:')
-                self.password = getpass.getpass()
-                await self.conn
+            await self.conn  # This will initialize the connections
             await self.sftp
 
         try:  # Check connection to remote host
@@ -523,14 +523,14 @@ class RemotePath(Path):
 
         data = BytesIO(origin).read()
         async with self.open_sem:
-                async with sftp.open(target, 'wb', block_size=65536) as dst:
-                    ith = 0
-                    while ith * self.CHUNK_SIZE < len(origin):
-                        await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
-                        ith += 1
-                        if cb is not None and len(origin) > self.CHUNK_SIZE:
-                            cb(self.CHUNK_SIZE / len(origin))
-                    await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
+            async with sftp.open(target, 'wb', block_size=65536) as dst:
+                ith = 0
+                while ith * self.CHUNK_SIZE < len(origin):
+                    await dst.write(data[ith * self.CHUNK_SIZE: (ith + 1) * self.CHUNK_SIZE])
+                    ith += 1
+                    if cb is not None and len(origin) > self.CHUNK_SIZE:
+                        cb(self.CHUNK_SIZE / len(origin))
+                await dst.utime(times=(mtime.timestamp(), mtime.timestamp()))
         if cb is not None:
             cb(True)
 

@@ -28,6 +28,8 @@ class IrisConfig:
     ignore_pattern: str = '//'
     origin_jump: Optional[str] = None
     dest_jump: Optional[str] = None
+    origin_key: Optional[str] = '~/.ssh/id_rsa'
+    dest_key: Optional[str] = '~/.ssh/id_rsa'
     
     def sided_configs(self, origin=True):
         pat = 'origin' if origin else 'dest'
@@ -35,6 +37,8 @@ class IrisConfig:
         config = {k: v for k, v in asdict(self).items() if npat not in k}
         config['path'] = config[pat + '_path']
         config.pop(pat + '_path')
+        config['key'] = config[pat + '_key']
+        config.pop(pat + '_key')
         config['host'] = config.pop(pat)
         config['jump_host'] = config.pop(pat + '_jump')
         return config
