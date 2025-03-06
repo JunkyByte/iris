@@ -727,7 +727,7 @@ class LocalPath(Path):
         run_wd(path, queue=q, log=True, pattern=self.pattern,
                ignore_pattern=self.ignore_pattern)
         while True:
-            path, isdir, change, mtime = q.get().split('%')
+            path, isdir, change, mtime = q.get().rsplit('%', 3)
             log.debug(f'Local WD event: {path} {isdir} {change} {mtime}')
             if change != 'D':
                 mtime = None
