@@ -658,14 +658,18 @@ class LocalPath(Path):
 
     def all_files(self):
         files = []
-        for root, _, fs in os.walk(self.path):
+        for root, dirs, fs in os.walk(self.path):
+            if self.has_ignore(root, self.path) or not self.has_pattern(root, self.path):
+                dirs.clear()
+                continue
+
             for name in fs:
                 path = os.path.join(root, name)
 
-                if os.path.islink(path):  # Ignore sys links
+                if self.has_ignore(path, self.path) or not self.has_pattern(path, self.path):
                     continue
 
-                if not self.has_pattern(path, self.path) or self.has_ignore(path, self.path):
+                if os.path.islink(path):  # Ignore sys links
                     continue
 
                 time = pathlib.Path(path).stat().st_mtime
