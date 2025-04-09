@@ -118,7 +118,7 @@ class Path:
     async def _empty(self):
         return None
 
-    def write(self, origin, target_holder, write_cb=None, write_p_cb=None):
+    def write(self, origin, target_holder, write_cb=None, write_p_cb=None, initial_sync=False):
         # Find correct path for target file
         target_path = os.path.join(target_holder.path,
                                    origin.holder.relative_path(origin.path))
@@ -138,7 +138,7 @@ class Path:
             return self._empty()
 
         if origin.change_type in [None, 'C', 'M']:
-            return self._write(origin, target_holder, write_cb, write_p_cb)
+            return self._write(origin, target_holder, write_cb, write_p_cb, initial_sync)
         else:
             return self._delete(origin, target_holder, write_cb)
 
@@ -166,11 +166,12 @@ class Path:
 
         return merged
 
-    async def _write(self, origin, target_holder, callback=None, p_callback=None):
+    async def _write(self, origin, target_holder, callback=None, p_callback=None, initial_sync=False):
         """ Overwrite target with origin if newer """
         # Find correct path for target file
         target_path = os.path.join(target_holder.path,
                                    origin.holder.relative_path(origin.path))
+
         force = False
         target = None
         try:
@@ -186,7 +187,7 @@ class Path:
             return False
 
         merged = False
-        if force or origin.time > target.time:
+        if force or origin.time > target.time or (initial_sync and origin.time < target.time):
             origin_content = await origin.get_content(p_callback)
             if origin_content is None:
                 return False

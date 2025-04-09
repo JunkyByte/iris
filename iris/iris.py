@@ -199,11 +199,13 @@ def main():
         t0 = time.time()
 
         # Process tasks
+        force_sync = (not config.mirror)
         tasks = [from_path.write(f, to_path,
                                  console.callback_write(from_path.host,
                                                         f.short_path,
                                                         to_path.host),
-                                 console.callback_progress(f.short_path))
+                                 console.callback_progress(f.short_path),
+                                 initial_sync=force_sync)
                  for f in from_files]
         run(tasks)
 
@@ -216,7 +218,8 @@ def main():
                                    console.callback_write(from_path.host,
                                                           f.short_path,
                                                           to_path.host, True),
-                                   console.callback_progress(f.short_path))
+                                   console.callback_progress(f.short_path),
+                                   initial_sync=force_sync)
                      for f in to_files]
             run(tasks)
 
