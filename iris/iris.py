@@ -234,6 +234,7 @@ def main():
         status.update(status='[bold blue]Listening for changes on local and remote path')
 
         req = []
+        currently_syncing = False
         while True:  # Process requests for watchdogs
             from_req = from_path.next_task()
             to_req = to_path.next_task()
@@ -255,8 +256,14 @@ def main():
                                              console.callback_progress(r.short_path)))
 
             if req:
+                if not currently_syncing:
+                    status.update(status='[bold red]Syncing changes between local and remote path')
+                    currently_syncing = True
                 run(req)
                 req = []
+            elif currently_syncing:
+                status.update(status='[bold blue]Listening for changes on local and remote path')
+                currently_syncing = False
 
             time.sleep(1e-2)
 
